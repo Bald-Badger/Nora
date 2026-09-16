@@ -1,173 +1,270 @@
 # Nora
 
-Nora is an early web app idea for keeping track of fridge inventory through a simple chat window.
+Nora is a local fridge-inventory notebook with a chat interface and a bridge to an external AI agent such as ChatGPT.
 
-## Starting Problem
+The goal is to make updating and checking fridge inventory feel as easy as texting someone. Nora records what is available, helps prevent forgotten or duplicate purchases, tracks expiration information, and supplies inventory context to the AI agent when the user requests higher-level help.
 
-Right now, it is hard to remember what is actually in the fridge. Food gets forgotten, ingredients expire, duplicates get bought, and meal planning becomes guesswork.
+## Responsibility Boundary
 
-The first goal is simple: make updating and checking fridge inventory feel as easy as texting someone.
+Nora is not its own reasoning, recipe, or recommendation engine.
 
-## Core Idea
+**Nora owns:**
 
-The app should have a chat-first interface where the user can type natural messages like:
+- The local inventory database.
+- The human-readable inventory view.
+- Schema validation and SQL transactions.
+- Current date, time, and household time-zone context.
+- Inventory history, undo, and debug logs.
+- Selecting relevant inventory context and passing it to the AI agent.
+- Applying or displaying validated structured responses from the AI agent.
+
+**The AI agent owns:**
+
+- Interpreting natural and vague language.
+- Making good-faith assumptions when information is missing.
+- Estimating expiration dates when no manual date is available.
+- Interpreting uploaded images.
+- Producing meal, recipe, substitution, and shopping recommendations.
+- Returning typed, structured inventory actions for Nora to validate.
+
+The AI agent never receives direct database access.
+
+The AI provider is replaceable. Nora's domain logic, inventory schema, validation, and user interface must not depend on one provider's SDK or response format. Provider-specific code belongs behind a common adapter so Groq, OpenAI, Gemini, or a future local model can be selected through configuration without rewriting inventory behavior.
+
+## MVP Interface
+
+The first version is a minimal, chat-first web interface modeled after a focused coding-assistant conversation screen. It contains:
+
+1. A chat window.
+2. An image-upload button that attaches a photo to a chat message.
+3. A clear inventory button that opens the current-fridge inventory view on demand.
+
+The inventory view is hidden until requested and groups items by category. It should be easy to close and return to the conversation without losing chat state. The database is the canonical inventory record; the inventory view is derived from it and must show the same item details, quantities, units, freshness information, locations, and statuses.
+
+The first interface tracks only the fridge. The underlying schema remains suitable for pantry, freezer, spices, household supplies, and other rooms in the future.
+
+Fast inventory entry is more important than meal suggestions in the first version.
+
+When a feature's MVP status is unclear, keep it in the future roadmap until it is explicitly promoted to the MVP.
+
+## Example Messages
+
+Nora should accept natural messages such as:
 
 - "I bought milk, eggs, spinach, and chicken."
 - "Used the last of the tomatoes."
 - "Do I still have yogurt?"
-- "What should I cook before it goes bad?"
 - "Add two packs of tofu expiring next Friday."
 - "Costco full fat milk x3, expires in roughly 3 months."
+- "What should I cook before it goes bad?"
+- "Help me come up with a few dinners I can make in 30 minutes, with recipes."
+- "What regular staples should I buy?"
+- "Actually, make that almond milk."
+- "Undo the last change."
 
-Nora should understand those messages and keep an inventory list up to date.
+## AI Text-to-Inventory Flow
 
-Nora should also be able to chat with an AI agent for higher-level help that goes beyond inventory edits. For example: "Help me come up with a few quick dinner ideas that I can get done in 30 minutes, as well as the recipe."
+The configured AI provider is the primary text-to-inventory interpreter. Nora sends each chat message with relevant context, which may include current inventory, known locations, recent edits, current date and time, time zone, and household preferences.
 
-For open-ended questions such as "What can I make right now?", Nora should pass the user's question and relevant inventory context to ChatGPT rather than implement its own meal-planning logic. The context may include current inventory, soon-to-expire items, relevant past inventory activity, household preferences, and the user's time limit. ChatGPT should provide practical meal options and concise recipes. Advice requests should not change inventory unless the user explicitly asks Nora to do so.
+The AI returns a typed, structured response rather than free-form inventory data. Supported inventory actions include:
 
-Items marked expired or determined to be definitely expired are not usable inventory. Nora must exclude them from the context it sends for meal ideas, recipes, substitutions, and other food recommendations. They may remain in the inventory only for review, discard, or correction; Nora must never recommend consuming them.
+- Add an item.
+- Consume or remove an item.
+- Update a quantity or unit.
+- Update an expiration date.
+- Move an item.
+- Mark an item discarded.
+- Query the inventory.
+- Add or update a leftover.
+- Undo the last change.
+- Return a non-inventory response, such as cooking advice.
 
-Nora should also use past inventory activity to make higher-level shopping recommendations when the user asks. For example, if the user regularly buys and keeps full-fat milk in the fridge, Nora can suggest adding it to the shopping list when supplies are low or absent. Nora should not proactively add items or interrupt the user with these recommendations; they are available on request.
+A structured inventory action should include the affected item, quantity and unit, location, freshness estimate and precision, assumptions, and confidence.
 
-Nora should also handle imperfect expiration information. If the user gives a rough estimate like "Costco full fat milk x3, expire in 3 months," the app should make a good-faith guess instead of asking for an exact date every time. Manual expiration information takes priority when it is available, including a best-by date read from a user-uploaded image; otherwise Nora uses an AI estimate.
+Nora validates the response against its schema and applies accepted changes in one SQL transaction. After a change, Nora shows a short receipt describing what it recorded and any assumptions, with a clear undo option.
 
-For that example, Nora should infer:
+SQLite is never connected directly to the AI service. For each request, Nora queries only the relevant records, serializes them into a bounded provider-neutral context payload, and sends that payload with the user's message or image through the active provider adapter. The AI returns a structured action matching Nora's strict internal schema. Nora validates the action, resolves referenced item IDs, checks current database state, and performs the SQL transaction itself. Query-only AI answers receive a filtered snapshot and cannot write inventory.
 
-- Item: Costco full fat milk
-- Quantity: 3
-- Expiration: about 3 months from the date added
-- Expiration confidence: approximate / user-estimated
+When a consumption message uses a vague amount, such as "I used some milk," the AI agent should estimate the amount. Nora records the estimate, clearly shows the assumed quantity in the change receipt, and allows the change to be undone. Exact amounts and phrases such as "used the last" take priority over estimation.
 
-Display the inferred calendar date while preserving its source and uncertainty: mark an AI-derived date as **AI estimated** and a user-provided or image-read date as **exact**.
+If the AI service is unavailable or returns an invalid action, Nora must not change inventory. It should tell the user that chat-based inventory updates are temporarily unavailable and safely record the failure in the debug log.
 
-Nora must know the current date and time, including the household's configured time zone. Use this as the authoritative reference for calculating relative dates (such as "in 3 months" or "next Friday"), determining whether items are expiring soon or definitely expired, and timestamping inventory and debug logs.
+The MVP assumes the configured AI service is normally available and does not provide a separate manual inventory-editing form. When the service is unavailable, Nora must show a clear on-screen notice and wait for it to recover.
 
-## Future-Proof Inventory Model
+## AI Agent Requests
 
-Nora starts with the fridge, but the underlying inventory should support the whole home from day one. The fridge should be a default location and view, not a constraint built into every item.
+For open-ended questions such as "What can I make right now?", Nora passes the question and relevant inventory context to the configured AI agent. The context may include current inventory, soon-to-expire items, past inventory activity, household preferences, and time constraints.
 
-Each inventory record should be able to store:
+The AI agent handles meal ideas, recipes, substitutions, and weekly meal planning. Advice does not change inventory unless the user explicitly requests an inventory change.
 
-- **Item identity**: display name, normalized name, brand, and optional notes.
-- **Quantity and unit**: amount, unit, and status such as available, low, empty, consumed, or discarded. Units must be stored alongside quantities, supporting countable units (`3 cartons`), weight (`500 g`), volume (`1 L`), and household units (`1 bunch`, `half a jar`). Preserve the user's original unit when practical.
-- **Location**: a flexible hierarchy such as `Kitchen > Fridge > Top Shelf`, `Kitchen > Pantry > Spice Rack`, or `Bathroom > Cabinet`.
-- **Category**: for example dairy, produce, meat, spice, cleaning supply, or medicine. Categories should be editable rather than limited to food.
-- **Storage details**: optional container, shelf, bin, or room information.
-- **Dates and freshness**: added date, expiration or best-by date, source (user-provided, image-read, or AI-estimated), and precision/confidence (`exact`, `approximate`, or `unknown`).
-- **Source and history**: how the item was added (chat, photo, barcode, receipt, or manual entry) and a log of later changes.
+When asked, the AI agent may use past inventory activity to recommend likely staples. For example, if the user regularly keeps full-fat milk in the fridge, it may suggest buying milk when none remains. Nora must not proactively interrupt the user, add recommended items, or modify the shopping list without a request.
 
-This lets a single inventory system expand naturally to pantry staples, spices, freezer items, household supplies, and other rooms, while keeping the initial fridge experience clean and simple.
+## Image Handling
 
-## Data Storage
+The MVP supports full photo-to-inventory recognition. Nora may send user-uploaded photos of groceries, fridge contents, pantry shelves, receipts, or visible best-by dates to the configured AI provider. The AI identifies the items, quantities, units, and visible expiration information, then proposes inventory additions or updates for Nora to validate and the user to confirm before applying them in one SQL transaction.
 
-Use a relational, SQL-compatible data model for maximum portability. SQLite is the preferred starting database because it runs locally with minimal setup, supports reliable persistence, and can later be migrated to a server-hosted SQL database if Nora gains accounts or household sharing.
+If the API is unavailable, image-capable access is not enabled, or image analysis fails, Nora must clearly report that the image feature is temporarily down. It must not claim the image was processed. Diagnostic details should be logged without exposing credentials.
 
-The schema should keep inventory items, locations, inventory edit logs, and debug logs in separate related tables. Avoid storing the whole inventory as one unstructured document so filtering by location, showing expiring items, reviewing history, and expanding to the whole house remain straightforward.
+Retain original uploaded images in Nora's local persistent storage for debugging for 30 days. Each image should be linked to its AI-processing record and resulting inventory events. After 30 days, delete the image file while retaining its processing metadata and inventory audit events. Images remain private to Nora and must not be retransmitted except when needed for an inventory-related request.
 
-The database is the canonical inventory record. Nora should provide a neatly arranged, human-readable web view that reflects the same item details, locations, quantities, freshness information, and statuses stored in the database. This view should be derived from the database rather than maintained as a separate editable copy, so it stays in sync after every change.
+## Expiration and Food Safety
 
-## AI and Image Handling
+Manual expiration information takes priority when available. This includes a best-by date read from an uploaded image. If no manual date is available, the AI agent makes a good-faith estimate.
 
-Nora may use the ChatGPT API to interpret user-uploaded photos of groceries, fridge contents, pantry shelves, or receipts, then propose inventory additions for the user to confirm.
+For a message such as "Costco full fat milk x3, expires in roughly 3 months," the structured result should identify:
 
-If the ChatGPT API is unavailable, image-capable access is not enabled on the account, or image analysis otherwise fails, Nora must clearly notify the user that the image feature is temporarily down. It should not silently fail or claim that an image was processed. The debug log should capture the failure details without exposing sensitive credentials.
+- Item: Costco full-fat milk.
+- Quantity: 3.
+- Expiration: three months from the date added.
+- Expiration confidence: approximate or user-estimated.
 
-## AI Text-to-Inventory
+The interface always displays a calendar date. An AI-derived date is labeled **AI estimated**; a user-provided or image-read date is labeled **exact**.
 
-ChatGPT is Nora's primary text-to-inventory interpreter. Every chat message is sent to the AI with the relevant current inventory, location list, recent edits, and household preferences as context. Nora should allow the AI to make good-faith assumptions for vague wording instead of repeatedly requiring exact details.
+Nora's backend clock and configured household time zone are authoritative for resolving relative dates such as "in 3 months" and "next Friday," checking expiration, and timestamping logs.
 
-The AI must return a typed, structured action rather than free-form data. Supported actions should include adding, consuming, updating, moving, discarding, or querying items, plus non-inventory replies such as cooking advice. A structured inventory action should contain the affected items, quantity and unit, location, freshness estimate and precision, assumptions made, and confidence.
+Prepared or opened leftovers are tracked separately. The AI agent should provide one practical latest-use date based on the food type, preparation, known storage conditions, and refrigerator temperature. Nora should distinguish quality-related dates from safety-related dates and must not present smell or appearance as proof that food is safe.
 
-Nora's backend must validate the AI action against the inventory schema and execute accepted changes in a single SQL transaction. The AI never receives direct database access. Nora should provide the current date, time, and configured time zone as context, while the backend remains authoritative for relative-date calculations and expiration checks. After an automatic change, Nora should show a short human-readable receipt describing what it recorded and any assumptions it made, with a clear undo option. The original user message, AI action, validation result, and final database change belong in the edit and debug logs.
+Items marked expired or determined to be definitely expired are not usable inventory. Nora excludes them from context for meal ideas, recipes, and substitutions. They remain visible only for review, correction, or discard and must never be recommended for consumption.
 
-If the AI service is unavailable or returns an invalid action, Nora must not modify inventory. It should tell the user that chat-based inventory updates are temporarily unavailable and record the diagnostic failure safely in the debug log.
+Nora should alert the user after an item is definitely expired, explain why it was flagged, and let the user discard it, correct its details, or keep the record. It must never remove an item automatically.
 
-## Early Feature Ideas
+Keeping an expired record does not restore it to usable inventory. The item remains excluded from recipes and meal recommendations until the user explicitly corrects or replaces its expiration date.
 
-- **Chat Inventory Updates**: Add, remove, or update fridge items using plain language.
-- **AI-First Text-to-Inventory**: Interpret every inventory message with ChatGPT, make best-effort assumptions for vague language, then show what Nora recorded and offer undo.
-- **Current Fridge List**: Show what is currently in the fridge, grouped by category.
-- **Human-Readable Inventory View**: Show a clean web view of the full inventory, organized by location and category, with the same details held in the database.
-- **Expiration Tracking**: Track estimated or user-provided expiration dates.
-- **Good-Faith Expiration Guessing**: Accept rough expiration language and store a best-effort expiration date or date range.
-- **Leftover Tracking**: Track prepared or opened food separately and let ChatGPT estimate its usable window. Show both a conservative food-safety estimate and a broader, clearly labeled outer estimate for users who accept more uncertainty; neither is a guarantee that food is safe to eat.
-- **Definitely Expired Alerts**: Proactively flag items that are clearly beyond their known or estimated storage window, such as six-month-old milk or two-month-old peeled garlic. Show why the item was flagged and let the user confirm it was discarded, update its details, or keep it.
-- **Expired-Item Exclusion**: Never treat expired items as usable ingredients or include them in meal and recipe recommendations.
-- **Low/Empty Detection**: Mark items as low, empty, or used up from chat messages.
-- **Duplicate Prevention**: Warn when the user may already have something before adding it to a shopping list.
-- **Requested Shopping Recommendations**: When asked, identify frequently replenished items from past activity and suggest likely staples to buy, such as full-fat milk the household regularly keeps in stock.
-- **ChatGPT-Powered Meal Ideas**: Pass the user's question and relevant current or past inventory context to ChatGPT for open-ended help, such as 30-minute dinner ideas, recipes, substitutions, and ways to use items that will expire soon.
-- **Use-Soon View**: Highlight food that should be eaten soon.
-- **Shopping List**: Generate a list from missing staples, planned meals, or chat requests.
-- **Quick Corrections**: Let the user fix mistakes conversationally, like "Actually, make that almond milk."
-- **Inventory History**: Keep a simple log of what was added, used, expired, or removed.
-- **Inventory Edit Log**: Record every inventory change with the time, affected item, action, previous value, new value, and source. This supports review and undo.
-- **Debug Log**: Keep a separate diagnostic log of messages, parsed intent, assumptions, errors, and system events so unexpected behavior can be investigated without mixing it into the household inventory history.
+## Inventory Data Model
 
-## Possible Chat Commands
+Each inventory record should support:
 
-These do not need to be rigid commands, but they help define what the assistant should understand:
+- **Identity:** display name, normalized name, brand, and notes.
+- **Quantity:** numeric or fractional amount and status such as available, low, empty, consumed, or discarded.
+- **Unit:** count, weight, volume, or household wording such as `3 cartons`, `500 g`, `1 L`, `1 bunch`, or `half a jar`. Preserve the user's original unit when practical.
+- **Location:** a flexible hierarchy such as `Kitchen > Fridge > Top Shelf`, `Kitchen > Pantry > Spice Rack`, or `Bathroom > Cabinet`.
+- **Category:** an editable category such as dairy, produce, meat, spice, cleaning supply, or medicine.
+- **Storage details:** optional container, shelf, bin, or room information.
+- **Dates and freshness:** added date, expiration or best-by date, source, precision, and confidence.
+- **Date source:** user-provided, image-read, or AI-estimated.
+- **Date precision:** exact, approximate, or unknown.
+- **Source and history:** whether the item came from chat, photo, barcode, receipt, or manual entry, plus later changes.
 
-- Add item
-- Remove item
-- Update quantity
-- Update expiration date
-- Add a rough or approximate expiration estimate
-- Add or update a leftover, including an AI-estimated usable window
-- Check whether an item exists
-- List everything in the fridge
-- List items expiring soon
-- List items that appear definitely expired
-- Suggest meals
-- Ask for AI cooking help, recipes, substitutions, or meal plans
-- Ask what regular staples may need to be bought
-- Create shopping list
-- Undo last change
+Nora may merge a newly added item into an existing inventory entry only when the product identity, unit, location, expiration date, expiration source, and expiration precision match. Items with different expiration details remain separate batches even when they are otherwise the same product.
 
-## MVP Scope
+## Storage and Logging
 
-The first useful version could be very small:
+Use a relational, SQL-compatible data model. SQLite is the preferred starting database because it runs locally with minimal setup and can later migrate to a server-hosted SQL database.
 
-1. A minimal single-screen interface: a chat window, an image-upload button that attaches a photo to a chat message, and the current fridge inventory list below.
-2. A visible fridge inventory panel.
-3. A neatly arranged web inventory view backed directly by the database.
-4. Ability to add items from chat.
-5. Ability to remove or mark items used from chat.
-6. Basic item fields: name, quantity, unit, category, location, added date, expiration date.
-7. Expiration date source and precision fields, with manual or image-read dates taking priority over AI estimates.
-8. Local-only persistence so the inventory does not disappear on refresh; no accounts or cloud sync in the first version.
-9. Persistent inventory edit log and debug log.
-10. SQLite-backed relational storage, with a schema designed to remain compatible with other SQL databases later.
-11. AI-powered chat responses for meal ideas and recipes, using inventory context without automatically changing inventory.
-12. Clear alerts for items that appear definitely expired, without automatically removing them from inventory.
-13. On-request shopping recommendations based on past inventory activity, without automatically changing the shopping list.
-14. ChatGPT-powered text-to-inventory actions with structured validation, transaction-safe database writes, visible assumptions, and undo.
-15. Current date, time, and household time-zone awareness for relative-date and expiration calculations.
-16. Leftover tracking with AI-estimated conservative and explicitly uncertain broader expiration windows.
-17. Prioritize fast inventory entry over meal suggestions in the first version.
+Keep inventory items, locations, inventory edit logs, and debug logs in separate related tables. Do not store the entire inventory as one unstructured document.
+
+Every inventory edit must record:
+
+- Timestamp.
+- Affected item.
+- Action.
+- Previous value.
+- New value.
+- Change source.
+- Original user message.
+- AI action and assumptions.
+- Validation result.
+
+The separate debug log records parsed intent, assumptions, errors, API failures, and system events without exposing sensitive credentials.
+
+Retain debug logs for a rolling 90-day period. Keep inventory edit history permanently unless the user explicitly deletes it in a future data-management workflow.
+
+Retain visible chat history for 60 days. Deleting an expired chat message must not remove or alter inventory changes and audit events that resulted from it.
+
+All session and data-retention periods must be configuration values rather than hard-coded behavior. Initial defaults are:
+
+- Session idle timeout: 15 days.
+- Session maximum lifetime: 30 days.
+- Uploaded-image lifetime: 30 days.
+- Chat-history lifetime: 60 days.
+- Debug-log lifetime: 90 days.
+- Inventory edit history: permanent.
+
+## Deployment
+
+- **Target host:** Ubuntu 26.04.1 LTS on `x86_64`, kernel `7.0.0-31-generic`.
+- **Container runtime:** Docker `29.5.0` with Docker Compose `v5.1.3`.
+- **LAN address:** `192.168.50.39`, reserved in the router's DHCP configuration. The `172.x` host addresses are Docker bridge networks and are not used for local DNS.
+- **IPv6:** The host has globally routable IPv6 addresses. Firewall rules must restrict Nora on both IPv4 and IPv6; relying only on the absence of IPv4 port forwarding is insufficient.
+- **Private DNS:** Pi-hole provides local DNS. Configure `nora.shuainium.com` as a local DNS record resolving to `192.168.50.39`, and configure VPN clients to use Pi-hole for DNS.
+- **Remote access:** WireGuard runs on the home router. WireGuard clients must receive or use Pi-hole as their DNS resolver and have a route to the `192.168.50.0/24` LAN so `nora.shuainium.com` reaches the private server address.
+- **Public DNS provider:** Cloudflare manages `shuainium.com`. Use a narrowly scoped Cloudflare DNS API token for the ACME DNS-01 challenge so Caddy can obtain TLS certificates without exposing Nora to the internet. Do not use a Cloudflare Tunnel or create a public Nora address record.
+- Package Nora as Docker containers managed with Docker Compose.
+- Persist the SQLite database, uploaded images, and application logs outside the disposable application container using mounted local volumes.
+- Make Nora available at `nora.shuainium.com` only from the home LAN and home VPN.
+- Use local or split-horizon DNS so that hostname resolves to the server's private IP for LAN and VPN clients.
+- Do not publish Nora in public DNS or forward Nora's HTTP/HTTPS ports from the internet-facing router.
+- Put a reverse proxy in front of Nora for its hostname and TLS handling.
+- Permit inbound access only from trusted LAN and VPN subnets. Nora may still make outbound requests to the configured AI API.
+- Store API keys and other secrets in environment or secret files that are not committed to source control.
+- Back up the persistent SQLite and upload volumes regularly.
+- Create one automatic backup of the persistent SQLite database and retained uploads per day.
+- Store backups inside a dedicated directory within the Nora repository, such as `backups/`, and exclude that directory from Git.
+- Retain the latest 30 daily backups and automatically prune older backup files.
+- Repository-local backups protect against application and database mistakes but do not protect against loss or failure of the server disk.
+
+## Access Control
+
+- Nora is reachable only from the trusted home LAN or home VPN.
+- Nora uses a single-user password rather than passkeys or phone-IP allowlisting.
+- Store only a strong password hash, never the plaintext password.
+- After successful login, remember the browser with a server-side session and a secure HTTPS-only cookie.
+- Sessions expire after 15 days of inactivity and always expire after a maximum of 30 days, even when actively used.
+- Support manual logout and server-side revocation of all active sessions.
+- Other LAN or VPN users may reach the login screen but cannot view or modify inventory without the password.
+
+## AI Data Boundary
+
+- Nora may send the AI service project source code, inventory records, and inventory-related content needed for the current request.
+- Inventory-related content may include the user's current message, uploaded images, relevant inventory history, locations, timestamps, preferences, and prior inventory actions.
+- Send only the subset needed for the current request rather than the entire database or history by default.
+- Never send credentials, API keys, passwords, session tokens, secret files, or unrelated host and household data.
+- Treat debug logs as private diagnostic data; do not send them unless sensitive fields have been removed and the user explicitly requests AI-assisted debugging.
+
+## Technology Stack
+
+- **Language:** TypeScript.
+- **Web application:** Next.js with React and the App Router, self-hosted as one Node.js application.
+- **Database:** SQLite through Prisma ORM's established SQLite connector and migrations, using tested stable package versions.
+- **Validation:** Zod schemas between AI responses, application logic, and database writes.
+- **AI integration:** A provider-neutral application interface with provider-specific adapters. Select the active provider and model through configuration rather than hard-coding either one.
+- **Testing:** Vitest for application logic and Playwright for browser workflows.
+- **Packaging:** Docker and Docker Compose.
+- **Reverse proxy:** Caddy by default, unless the deployment environment already has a preferred proxy.
+
+## MVP Requirements
+
+- Local-only persistence with no accounts or cloud sync.
+- SQLite-backed relational storage.
+- AI-powered, structured text-to-inventory conversion through a replaceable provider adapter.
+- Chat-based add, consume, update, discard, query, correction, and undo actions.
+- Item name, quantity, unit, category, location, added date, expiration date, date source, and precision.
+- An on-demand, human-readable fridge inventory grouped by category and synchronized with the database.
+- Full photo-to-inventory recognition, including image attachment, item detection, quantity and unit extraction, and visible expiration information.
+- AI-estimated expiration when manual information is unavailable.
+- Current date, time, and household time-zone awareness.
+- Persistent inventory edit and debug logs.
+- Transaction-safe database changes with visible assumptions and undo.
+- Definitely-expired alerts without automatic removal.
+- Exclusion of expired items from meal recommendations.
+- Leftover tracking with one practical AI-estimated latest-use date.
+- On-request meal, recipe, and shopping recommendations through the configured AI agent.
+- No manual inventory-editing fallback; display an on-screen notice when the configured AI service is unavailable.
 
 ## Nice Later Ideas
 
 - Barcode scanning.
 - Receipt scanning.
-- Picture-based inventory add: take a photo of groceries, fridge contents, pantry shelves, or a receipt-like spread; use the ChatGPT API to identify items and propose additions for confirmation.
 - Recipe integrations.
-- Automatic expiration estimates by food type.
+- An inventory-based meal discovery page that shows AI-recommended dishes from current non-expired inventory, recipes, and clearly identified missing ingredients.
+- A dedicated food-type shelf-life system for automatic expiration estimates. The MVP uses the configured AI agent's general estimate when no manual date is available.
+- Reminders to throw away leftovers after their latest-use date.
 
 ## Not Planned Yet
 
-- In-fridge camera or photo-based fridge detection.
+- In-fridge cameras or automatic fridge photography.
 - Shared household inventory.
-- Whole-home inventory views. The schema is ready for later expansion, but the interface remains fridge-only for now.
-- Notifications before food expires. Nora should alert only after an item is definitely expired.
-- Dietary preferences and allergy filters.
-- Built-in weekly meal planning. Open-ended meal planning belongs to the ChatGPT agent.
-
-## MVP Decisions
-
-- **Scope**: The first interface tracks the fridge only. The data model remains ready for pantry, freezer, spices, and the rest of the house later.
-- **Expiration dates**: Prefer a user-provided date, including a best-by date read from an uploaded image. Use an AI estimate only when no manual date is available.
-- **Expiration display**: Always show an inferred calendar date, labeled **AI estimated** when Nora guessed it and **exact** when it came from user-provided or image-read information.
-- **Interface**: Keep it minimal: chat window, image-upload button for attaching a photo to chat, and current fridge inventory beneath.
-- **Storage**: Local only for now. No accounts or cloud sync in the MVP.
-- **Priority**: Fast inventory entry comes before meal suggestions.
+- Whole-home inventory views. The schema supports later expansion, but the interface remains fridge-only for now.
+- Notifications before food expires. Nora alerts only after an item is definitely expired.
+- Dietary-preference and allergy filters.
+- Built-in weekly meal-planning logic. Open-ended meal planning belongs to the AI agent.
