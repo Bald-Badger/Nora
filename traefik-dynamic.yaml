@@ -1,0 +1,22 @@
+http:
+  routers:
+    nora:
+      rule: Host(`nora.shuainium.com`)
+      entryPoints:
+        - websecure
+      service: nora
+      middlewares:
+        - upload-limit
+      tls:
+        certResolver: cloudflare
+
+  services:
+    nora:
+      loadBalancer:
+        servers:
+          - url: http://nora:8080
+  middlewares:
+    upload-limit:
+      buffering:
+        maxRequestBodyBytes: 9437184
+        memRequestBodyBytes: 1048576

@@ -1,0 +1,95 @@
+services:
+  nora-proxy:
+    image: traefik:v3.5
+    container_name: nora-proxy
+    restart: unless-stopped
+    command:
+      - "--entrypoints.websecure.address=:8443"
+      - "--providers.file.filename=/etc/traefik/dynamic.yaml"
+      - "--certificatesresolvers.cloudflare.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53"
+    environment:
+      CF_DNS_API_TOKEN_FILE: /run/secrets/cloudflare_dns_token
+    ports:
+      - "${NORA_LAN_IP:-192.168.50.39}:443:8443"
+    volumes:
+      - ./traefik-dynamic.yaml:/etc/traefik/dynamic.yaml:ro
+      - ./data/letsencrypt:/letsencrypt
+      - /etc/nora/secrets/cloudflare_dns_token:/run/secrets/cloudflare_dns_token:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - nora
+
+  nora:
+    image: nora:local
+    build:
+      context: .
+    container_name: nora
+    restart: unless-stopped
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/nora
+    environment:
+      DATABASE_URL: file:/app/data/nora.db
+      APP_ORIGIN: ${APP_ORIGIN:-https://nora.shuainium.com}
+      HOUSEHOLD_TIMEZONE: ${HOUSEHOLD_TIMEZONE:-America/Phoenix}
+      AI_PROVIDER: ${AI_PROVIDER:-groq}
+      AI_MODEL: ${AI_MODEL:-qwen/qwen3.8-27b}
+      SESSION_IDLE_DAYS: ${SESSION_IDLE_DAYS:-15}
+      SESSION_MAX_DAYS: ${SESSION_MAX_DAYS:-30}
+      CHAT_DAYS: ${CHAT_DAYS:-60}
+    volumes:
+      - ./data/app:/app/data
+      - ./backups:/app/backups
+      - /etc/nora/secrets/groq_api_key:/run/secrets/groq_api_key:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    mem_limit: 1g
+    pids_limit: 150
+
+  maintenance:
+    image: nora:local
+    pull_policy: never
+    restart: unless-stopped
+    command: ["maintenance"]
+    user: "1000:1000"
+    environment:
+      DATABASE_URL: file:/app/data/nora.db
+      SESSION_IDLE_DAYS: ${SESSION_IDLE_DAYS:-15}
+      SESSION_MAX_DAYS: ${SESSION_MAX_DAYS:-30}
+      IMAGE_DAYS: ${IMAGE_DAYS:-30}
+      CHAT_DAYS: ${CHAT_DAYS:-60}
+      DEBUG_DAYS: ${DEBUG_DAYS:-90}
+      BACKUP_COUNT: ${BACKUP_COUNT:-30}
+    volumes:
+      - ./data/app:/app/data
+      - ./backups:/app/backups
+    read_only: true
+    network_mode: none
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    healthcheck:
+      disable: true
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      nora:
+        condition: service_healthy

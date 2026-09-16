@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "sqlite"
+  url = env("DATABASE_URL")
+}
+model Location {
+  id String @id @default(cuid())
+  name String @unique
+  parentId String?
+  items Item[]
+}
+model Item {
+  id String @id @default(cuid())
+  name String
+  normalizedName String
+  brand String @default("")
+  quantity Float
+  unit String
+  category String
+  locationId String
+  location Location @relation(fields: [locationId], references: [id])
+  notes String @default("")
+  storage String @default("")
+  leftover Boolean @default(false)
+  status String @default("available")
+  expiration String
+  dateSource String
+  datePrecision String
+  dateKind String @default("quality")
+  confidence Float
+  source String
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model Processing {
+  id String @id @default(cuid())
+  requestId String @unique
+  original String
+  promptVersion String
+  model String
+  result String?
+  status String @default("processing")
+  baseRevision Int
+  createdAt DateTime @default(now())
+  events Event[]
+  uploads Upload[]
+}
+model Event {
+  id String @id @default(cuid())
+  processingId String
+  processing Processing @relation(fields: [processingId], references: [id])
+  itemId String
+  action String
+  before String?
+  after String?
+  validation String @default("accepted")
+  undone Boolean @default(false)
+  createdAt DateTime @default(now())
+}
+model Message {
+  id String @id @default(cuid())
+  role String
+  content String
+  processingId String?
+  createdAt DateTime @default(now())
+}
+model Upload {
+  id String @id @default(cuid())
+  processingId String
+  processing Processing @relation(fields: [processingId], references: [id])
+  path String
+  mime String
+  deleted Boolean @default(false)
+  createdAt DateTime @default(now())
+}
+model DebugLog {
+  id String @id @default(cuid())
+  code String
+  processingId String?
+  createdAt DateTime @default(now())
+}
+model Setting {
+  key String @id
+  value String
+}
+model Session {
+  id String @id
+  createdAt DateTime @default(now())
+  lastSeen DateTime @default(now())
+}
+model LoginAttempt {
+  id Int @id @default(1)
+  failures Int @default(0)
+  blockedUntil DateTime?
+}
