@@ -57,6 +57,25 @@ describe("inventory authority", () => {
     ).toBe(6);
     expect(await db.event.count()).toBe(3);
   });
+  it("stores the three supported locations and keeps locations separate", async () => {
+    for (const location of ["Fridge", "Freezer", "Shelf"])
+      await applyResult(
+        (await proposal([{ operation: "add", item: { ...item, location } }]))
+          .id,
+      );
+    expect(await db.item.count()).toBe(3);
+    expect(
+      (
+        await db.item.findMany({
+          include: { location: true },
+          orderBy: { location: { name: "asc" } },
+        })
+      ).map((saved) => saved.location.name),
+    ).toEqual(["Freezer", "Fridge", "Shelf"]);
+    expect(itemSchema.safeParse({ ...item, location: "Pantry" }).success).toBe(
+      false,
+    );
+  });
   it("rolls back the whole transaction on an invalid item reference", async () => {
     const p = await proposal([
       { operation: "add", item },

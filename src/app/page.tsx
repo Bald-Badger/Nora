@@ -18,8 +18,11 @@ import {
   Wifi,
   WifiOff,
   Bell,
-  ScanBarcode,
-  ReceiptText,
+  Camera,
+  Sun,
+  Moon,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 type Item = {
   id: string;
@@ -47,13 +50,17 @@ type Proposal = {
   result: {
     reply: string;
     assumptions: string[];
-    actions: { operation: string; item?: Omit<Item, "id"> }[];
+    actions: {
+      operation: string;
+      item?: Omit<Item, "id" | "location"> & { location: string };
+    }[];
   };
 };
 export default function Home() {
   const [auth, setAuth] = useState<boolean | null>(null),
     [configured, setConfigured] = useState(true),
-    [password, setPassword] = useState("");
+    [password, setPassword] = useState(""),
+    [showPassword, setShowPassword] = useState(false);
   const [items, setItems] = useState<Item[]>([]),
     [messages, setMessages] = useState<
       { id: string; role: string; content: string }[]
@@ -62,9 +69,7 @@ export default function Home() {
   const [text, setText] = useState(""),
     [image, setImage] = useState<File | null>(null),
     [preview, setPreview] = useState(""),
-    [imageMode, setImageMode] = useState<"photo" | "receipt" | "barcode">(
-      "photo",
-    ),
+    [theme, setTheme] = useState<"light" | "dark">("dark"),
     [open, setOpen] = useState(false),
     [remindersOpen, setRemindersOpen] = useState(false),
     [busy, setBusy] = useState(false),
@@ -73,8 +78,14 @@ export default function Home() {
     [showPast, setShowPast] = useState(false),
     [householdToday, setHouseholdToday] = useState(""),
     [providerOnline, setProviderOnline] = useState<boolean | null>(null),
-    [exportFormat, setExportFormat] = useState("csv");
+    [providerState, setProviderState] = useState<
+      "checking" | "ready" | "unavailable" | "rate_limited"
+    >("checking"),
+    [exportFormat, setExportFormat] = useState("csv"),
+    [hasMoreMessages, setHasMoreMessages] = useState(false),
+    [loadingHistory, setLoadingHistory] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null),
+    cameraRef = useRef<HTMLInputElement>(null),
     end = useRef<HTMLDivElement>(null),
     drawer = useRef<HTMLElement>(null),
     inventoryButton = useRef<HTMLButtonElement>(null);
@@ -83,6 +94,7 @@ export default function Home() {
     message: string;
     image: File | null;
   } | null>(null);
+  const loadingHistoryRef = useRef(false);
   async function api(path: string, body?: BodyInit) {
     const r = await fetch(
       `/api/${path}`,
@@ -110,6 +122,7 @@ export default function Home() {
     const d = await api("state");
     setItems(d.items);
     setMessages(d.messages);
+    setHasMoreMessages(d.hasMoreMessages);
     setPending(d.pending);
     setHouseholdToday(d.today || new Date().toISOString().slice(0, 10));
   }
@@ -117,10 +130,27 @@ export default function Home() {
     try {
       const d = await api("provider-status");
       setProviderOnline(d.available);
+      setProviderState(d.state || (d.available ? "ready" : "unavailable"));
     } catch {
       setProviderOnline(false);
+      setProviderState("unavailable");
     }
   }
+  useEffect(() => {
+    const saved = localStorage.getItem("nora-theme");
+    const next =
+      saved === "light" || saved === "dark"
+        ? saved
+        : window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("nora-theme", theme);
+  }, [theme]);
   useEffect(() => {
     api("auth")
       .then((d) => {
@@ -134,8 +164,52 @@ export default function Home() {
       .catch(() => setError("Nora is unavailable. Refresh to retry."));
   }, []);
   useEffect(() => {
-    end.current?.scrollIntoView({ behavior: "smooth" });
+    if (loadingHistoryRef.current) return;
+    end.current?.scrollIntoView({ behavior: "auto" });
   }, [messages.length, pending.length, busy]);
+  useEffect(() => {
+    if (!auth) return;
+    let previousY = window.scrollY;
+    const loadOlder = async () => {
+      const first = messages[0];
+      if (!first || !hasMoreMessages || loadingHistoryRef.current) return;
+      loadingHistoryRef.current = true;
+      setLoadingHistory(true);
+      const oldHeight = document.documentElement.scrollHeight;
+      try {
+        const d = await api(`messages?before=${encodeURIComponent(first.id)}`);
+        setMessages((current) => {
+          const known = new Set(current.map((message) => message.id));
+          return [
+            ...d.messages.filter(
+              (message: { id: string }) => !known.has(message.id),
+            ),
+            ...current,
+          ];
+        });
+        setHasMoreMessages(d.hasMore);
+        requestAnimationFrame(() => {
+          window.scrollTo(
+            0,
+            document.documentElement.scrollHeight - oldHeight + window.scrollY,
+          );
+          loadingHistoryRef.current = false;
+          setLoadingHistory(false);
+        });
+      } catch (failure) {
+        loadingHistoryRef.current = false;
+        setLoadingHistory(false);
+        setError((failure as Error).message);
+      }
+    };
+    const onScroll = () => {
+      const currentY = window.scrollY;
+      if (currentY < previousY && currentY <= 120) void loadOlder();
+      previousY = currentY;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [auth, hasMoreMessages, messages]);
   useEffect(() => {
     if (!auth) return;
     const update = () => {
@@ -145,7 +219,7 @@ export default function Home() {
       }
     };
     window.addEventListener("focus", update);
-    const providerTimer = window.setInterval(checkProvider, 60_000);
+    const providerTimer = window.setInterval(checkProvider, 15_000);
     return () => {
       window.removeEventListener("focus", update);
       window.clearInterval(providerTimer);
@@ -202,6 +276,7 @@ export default function Home() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      void checkProvider();
     }
   }
   async function send(e: React.FormEvent) {
@@ -226,13 +301,11 @@ export default function Home() {
       form.set("requestId", pendingRequest.current.id);
       if (image) {
         form.set("image", image);
-        form.set("imageMode", imageMode);
       }
       await api("chat", form);
       pendingRequest.current = null;
       setText("");
       setImage(null);
-      setImageMode("photo");
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -241,6 +314,7 @@ export default function Home() {
       await refresh().catch(() => {});
     } finally {
       setBusy(false);
+      void checkProvider();
     }
   }
   if (auth === null)
@@ -260,7 +334,7 @@ export default function Home() {
         <div className="wordmark">
           <span className="brand-dot" /> Nora
         </div>
-        <h1>Your fridge, remembered.</h1>
+        <h1>What’s cooking?</h1>
         {configured ? (
           <form
             onSubmit={async (e) => {
@@ -281,14 +355,26 @@ export default function Home() {
             }}
           >
             <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
+            <div className="password-field">
+              <input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+              <button
+                type="button"
+                className="password-toggle"
+                title={showPassword ? "Hide password" : "Show password"}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword((shown) => !shown)}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
             <button className="primary" disabled={busy}>
               {busy ? "Signing in…" : "Sign in"}
             </button>
@@ -344,7 +430,7 @@ export default function Home() {
               Date.parse(
                 `${householdToday || new Date().toISOString().slice(0, 10)}T00:00:00Z`,
               ) <=
-              7 * 86_400_000)),
+              3 * 86_400_000)),
     )
     .sort((a, b) => a.expiration.localeCompare(b.expiration));
   return (
@@ -352,9 +438,18 @@ export default function Home() {
       <header>
         <div className="wordmark">
           <span className="brand-dot" />
-          Nora <span className="section-label">/ Fridge</span>
+          Nora <span className="section-label">/ Kitchen</span>
         </div>
         <nav>
+          <button
+            className="icon theme-toggle"
+            type="button"
+            title={`Use ${theme === "dark" ? "day" : "night"} theme`}
+            aria-label={`Use ${theme === "dark" ? "day" : "night"} theme`}
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          >
+            {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+          </button>
           <button
             className={`icon reminder-button ${reminderItems.length ? "has-reminders" : ""}`}
             title="Expiration reminders"
@@ -402,13 +497,18 @@ export default function Home() {
         </nav>
       </header>
       <main className="conversation">
+        {loadingHistory && (
+          <div className="history-loading" role="status">
+            <LoaderCircle size={14} className="spin" /> Loading older messages…
+          </div>
+        )}
         {!messages.length && (
           <div className="empty">
             <div className="fridge-mark">
               <Package size={32} strokeWidth={1.3} />
             </div>
-            <h1>What’s in your fridge?</h1>
-            <p>Milk, leftovers, and everything in between.</p>
+            <h1>What’s in your kitchen?</h1>
+            <p>Fridge, freezer, and shelf, remembered.</p>
           </div>
         )}
         {expiredItems.length > 0 && (
@@ -435,10 +535,7 @@ export default function Home() {
                   {a.item?.quantity} {a.item?.unit}
                 </span>
                 <small>
-                  {a.item?.expiration} ·{" "}
-                  {a.item?.dateSource === "ai"
-                    ? "AI estimated"
-                    : a.item?.datePrecision}
+                  {a.item?.location} · Expires {a.item?.expiration}
                 </small>
               </div>
             ))}
@@ -483,14 +580,7 @@ export default function Home() {
           {preview && (
             <div className="attachment">
               <img src={preview} alt="Attached grocery photo" />
-              <span>
-                {imageMode === "receipt"
-                  ? "Receipt"
-                  : imageMode === "barcode"
-                    ? "Barcode"
-                    : "Photo"}
-                {image?.name ? ` · ${image.name}` : ""}
-              </span>
+              <span>Photo{image?.name ? ` · ${image.name}` : ""}</span>
               <button
                 type="button"
                 className="icon"
@@ -523,6 +613,19 @@ export default function Home() {
               ref={fileRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f && f.size > 8 * 1024 * 1024)
+                  setError("Photos must be 8 MB or smaller.");
+                else setImage(f || null);
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={cameraRef}
+              type="file"
+              accept="image/*"
               capture="environment"
               hidden
               onChange={(e) => {
@@ -539,38 +642,19 @@ export default function Home() {
               title="Attach photo"
               aria-label="Attach photo"
               disabled={busy}
-              onClick={() => {
-                setImageMode("photo");
-                fileRef.current?.click();
-              }}
+              onClick={() => fileRef.current?.click()}
             >
               <Paperclip size={19} />
             </button>
             <button
               type="button"
               className="icon"
-              title="Scan receipt"
-              aria-label="Scan receipt"
+              title="Take photo"
+              aria-label="Take photo"
               disabled={busy}
-              onClick={() => {
-                setImageMode("receipt");
-                fileRef.current?.click();
-              }}
+              onClick={() => cameraRef.current?.click()}
             >
-              <ReceiptText size={19} />
-            </button>
-            <button
-              type="button"
-              className="icon"
-              title="Scan product barcode"
-              aria-label="Scan product barcode"
-              disabled={busy}
-              onClick={() => {
-                setImageMode("barcode");
-                fileRef.current?.click();
-              }}
-            >
-              <ScanBarcode size={19} />
+              <Camera size={19} />
             </button>
             <button
               type="button"
@@ -610,7 +694,9 @@ export default function Home() {
             )}
             {providerOnline === null
               ? "AI checking"
-              : providerOnline
+              : providerState === "rate_limited"
+                ? "AI rate limited"
+                : providerOnline
                 ? "AI ready"
                 : "AI unavailable"}
           </span>
@@ -687,7 +773,7 @@ export default function Home() {
             <div className="drawer-heading">
               <div>
                 <span className="eyebrow">KITCHEN</span>
-                <h2 id="inventory-title">Fridge inventory</h2>
+                <h2 id="inventory-title">Kitchen inventory</h2>
               </div>
               <button
                 className="icon"
@@ -765,6 +851,7 @@ export default function Home() {
                         storage.toLowerCase(),
                       );
                     const details = [
+                      i.location.name,
                       showStorage ? storage : "",
                       !active ? i.status : "",
                       i.leftover ? "Leftover" : "",
@@ -825,13 +912,7 @@ export default function Home() {
                         </div>
                         {showBrand && <p className="muted">{brand}</p>}
                         <p className={i.expired ? "expired" : "muted"}>
-                          {i.expiration} ·{" "}
-                          {i.dateSource === "ai"
-                            ? "AI estimated"
-                            : i.datePrecision === "exact"
-                              ? "Exact"
-                              : "Approximate"}{" "}
-                          · {i.dateKind}
+                          Expires {i.expiration}
                         </p>
                         {details.length > 0 && (
                           <p className="muted">{details.join(" · ")}</p>

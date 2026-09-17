@@ -8,6 +8,7 @@ const ai = vi.hoisted(() => ({
   classify: vi.fn(),
   interpret: vi.fn(),
   available: vi.fn(),
+  health: vi.fn(),
 }));
 const barcode = vi.hoisted(() => ({
   decode: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../src/ai/provider", () => ({
   model: () => "test-model",
   promptVersion: "test-prompts",
   providerAvailable: ai.available,
+  providerHealth: ai.health,
 }));
 vi.mock("../src/lib/barcode", () => ({
   decodeRetailBarcode: barcode.decode,
@@ -48,6 +50,7 @@ beforeEach(async () => {
   ai.classify.mockReset();
   ai.interpret.mockReset();
   ai.available.mockReset();
+  ai.health.mockReset();
   barcode.decode.mockReset();
   barcode.lookup.mockReset();
 });
@@ -100,6 +103,24 @@ it("does not mutate inventory when the AI service fails", async () => {
   expect((await POST(request("chat", form))).status).toBe(503);
   expect(await db.item.count()).toBe(0);
   expect(await db.event.count()).toBe(0);
+});
+it("declines unrelated chat without sending inventory to interpretation", async () => {
+  ai.classify.mockResolvedValue({
+    intent: "unrelated",
+    terms: [],
+    expirationCorrection: false,
+  });
+  const form = new FormData();
+  form.set("requestId", crypto.randomUUID());
+  form.set("message", "Write software for me");
+  const response = await POST(request("chat", form));
+  expect(response.status).toBe(200);
+  expect(ai.interpret).not.toHaveBeenCalled();
+  expect(await db.item.count()).toBe(0);
+  const answer = await db.message.findFirst({
+    where: { role: "assistant" },
+  });
+  expect(answer?.content).toContain("only handles household food inventory");
 });
 it("requires confirmation for photo writes and keeps upload/event links", async () => {
   const folder = await mkdtemp("/tmp/nora-photo-test-");
@@ -396,8 +417,44 @@ it("exports authenticated inventory as safe CSV and complete JSON", async () => 
 });
 
 it("reports provider availability without exposing diagnostics", async () => {
-  ai.available.mockResolvedValue(false);
+  ai.health.mockResolvedValue({
+    available: false,
+    state: "rate_limited",
+    checkedAt: 1,
+    retryAt: 2,
+  });
   const response = await GET(request("provider-status"));
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ available: false });
+  expect(await response.json()).toEqual({
+    available: false,
+    state: "rate_limited",
+    checkedAt: 1,
+    retryAt: 2,
+  });
+});
+
+it("pages retained chat history thirty messages at a time", async () => {
+  const start = Date.now() - 65_000;
+  await db.message.createMany({
+    data: Array.from({ length: 65 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: `message-${index}`,
+      createdAt: new Date(start + index * 1000),
+    })),
+  });
+  const stateResponse = await GET(request("state"));
+  const state = await stateResponse.json();
+  expect(state.messages).toHaveLength(30);
+  expect(state.messages[0].content).toBe("message-35");
+  expect(state.messages[29].content).toBe("message-64");
+  expect(state.hasMoreMessages).toBe(true);
+
+  const olderResponse = await GET(
+    request(`messages?before=${state.messages[0].id}`),
+  );
+  const older = await olderResponse.json();
+  expect(older.messages).toHaveLength(30);
+  expect(older.messages[0].content).toBe("message-5");
+  expect(older.messages[29].content).toBe("message-34");
+  expect(older.hasMore).toBe(true);
 });

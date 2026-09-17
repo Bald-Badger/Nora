@@ -1,6 +1,6 @@
 # Nora
 
-Nora is a private, local-first fridge inventory notebook with a chat interface and a bridge to a replaceable AI provider. It turns natural-language messages and grocery photos into validated inventory changes while keeping SQLite, authority, and audit history local.
+Nora is a private, local-first kitchen inventory notebook for the fridge, freezer, and shelf, with a chat interface and a bridge to a replaceable AI provider. It turns natural-language messages and grocery photos into validated inventory changes while keeping SQLite, authority, and audit history local.
 
 The complete product and security contract lives in [spec.md](spec.md). That document is authoritative for behavior, scope, prompts, data handling, and deployment decisions.
 

@@ -24,14 +24,14 @@ export async function applyResult(processingId: string) {
         throw new Error("Undo must be a separate request.");
       await undo(tx, processingId);
     } else {
-      const location = await tx.location.upsert({
-        where: { name: "Fridge" },
-        create: { name: "Fridge" },
-        update: {},
-      });
       for (const action of result.actions) {
         if (action.operation === "undo") continue;
-        const { location: _location, ...fields } = action.item;
+        const { location: locationName, ...fields } = action.item;
+        const location = await tx.location.upsert({
+          where: { name: locationName },
+          create: { name: locationName },
+          update: {},
+        });
         const values = {
           ...fields,
           normalizedName: fields.name.toLowerCase(),
@@ -108,7 +108,7 @@ export async function applyResult(processingId: string) {
       .map((a) =>
         a.operation === "undo"
           ? "Undid the last inventory change."
-          : `${a.operation === "add" ? "Added" : "Updated"} ${a.item.name}: ${a.item.quantity} ${a.item.unit}; ${a.item.expiration} (${a.item.dateSource}, ${a.item.datePrecision}).`,
+          : `${a.operation === "add" ? "Added" : "Updated"} ${a.item.name}: ${a.item.quantity} ${a.item.unit} in ${a.item.location}; ${a.item.expiration} (${a.item.dateSource}, ${a.item.datePrecision}).`,
       )
       .join("\n");
     await tx.message.create({

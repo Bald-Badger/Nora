@@ -13,7 +13,7 @@ export const itemSchema = z
     quantity: z.number().finite().min(0).max(100000),
     unit: z.string().trim().min(1).max(40),
     category: z.string().trim().min(1).max(60),
-    location: z.literal("Fridge"),
+    location: z.enum(["Fridge", "Freezer", "Shelf"]),
     notes: z.string().max(1000),
     storage: z.string().max(120),
     leftover: z.boolean(),
@@ -53,7 +53,14 @@ export const resultSchema = z
 export type Result = z.infer<typeof resultSchema>;
 export const intentSchema = z
   .object({
-    intent: z.enum(["edit", "query", "recommend", "shopping", "undo"]),
+    intent: z.enum([
+      "edit",
+      "query",
+      "recommend",
+      "shopping",
+      "undo",
+      "unrelated",
+    ]),
     terms: z.array(z.string().max(80)).max(12),
     expirationCorrection: z.boolean(),
   })

@@ -6,6 +6,27 @@
   --text: #eef0ed;
   --muted: #a2aaa8;
   --accent: #bce3bf;
+  --hover: #303436;
+  --header-line: #292c2d;
+  --surface: #1d2021;
+  --item-line: #303335;
+  --overlay: #0009;
+  --user-accent: #b5cbe6;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f7f4;
+  --panel: #ffffff;
+  --line: #cbd2cc;
+  --text: #202522;
+  --muted: #626b65;
+  --accent: #347a45;
+  --hover: #e6ebe7;
+  --header-line: #d9ded9;
+  --surface: #ffffff;
+  --item-line: #dfe4df;
+  --overlay: #1b211d66;
+  --user-accent: #34638b;
 }
 * {
   box-sizing: border-box;
@@ -38,7 +59,7 @@ button {
   cursor: pointer;
 }
 button:hover {
-  background: #303436;
+  background: var(--hover);
 }
 button:disabled {
   opacity: 0.45;
@@ -99,7 +120,7 @@ header {
   top: 0;
   background: var(--bg);
   z-index: 2;
-  border-bottom: 1px solid #292c2d;
+  border-bottom: 1px solid var(--header-line);
   padding: 0 32px;
   display: flex;
   align-items: center;
@@ -150,6 +171,15 @@ nav {
   padding: 35px 24px 270px;
   margin: auto;
 }
+.history-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 12px;
+}
 .empty {
   min-height: 35vh;
   display: flex;
@@ -177,7 +207,7 @@ nav {
   margin-bottom: 6px;
 }
 .user .sender {
-  color: #b5cbe6;
+  color: var(--user-accent);
 }
 .message-body {
   white-space: pre-wrap;
@@ -328,7 +358,7 @@ footer {
 .overlay {
   position: fixed;
   inset: 0;
-  background: #0009;
+  background: var(--overlay);
   z-index: 5;
   display: flex;
   justify-content: flex-end;
@@ -345,7 +375,7 @@ footer {
   padding: 24px;
   border: 1px solid #714749;
   border-radius: 6px;
-  background: #1d2021;
+  background: var(--surface);
 }
 .reminder-item {
   display: grid;
@@ -365,7 +395,7 @@ footer {
   color: var(--muted);
 }
 aside {
-  background: #1d2021;
+  background: var(--surface);
   width: 480px;
   max-width: 100%;
   height: 100dvh;
@@ -422,7 +452,7 @@ aside {
   border-radius: 6px;
 }
 .icon-button:hover {
-  background: #303436;
+  background: var(--hover);
 }
 .category h3 {
   font-size: 12px;
@@ -435,7 +465,7 @@ aside {
 }
 .inventory-item {
   padding: 12px 0;
-  border-bottom: 1px solid #303335;
+  border-bottom: 1px solid var(--item-line);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
@@ -510,6 +540,22 @@ aside {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.password-field {
+  position: relative;
+}
+.password-field input {
+  padding-right: 48px;
+}
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  width: 38px;
+  height: 38px;
+  padding: 8px;
+  border-color: transparent;
+  transform: translateY(-50%);
 }
 .login label {
   color: var(--muted);

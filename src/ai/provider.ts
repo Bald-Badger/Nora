@@ -18,21 +18,44 @@ const key = () =>
       "/run/secrets/groq_api_key",
     "utf8",
   ).trim();
-let availability: { checkedAt: number; available: boolean } | undefined;
-export async function providerAvailable() {
+type ProviderHealth = {
+  checkedAt: number;
+  available: boolean;
+  state: "ready" | "unavailable" | "rate_limited";
+  retryAt?: number;
+};
+let availability: ProviderHealth | undefined;
+export async function providerHealth(): Promise<ProviderHealth> {
+  if (
+    availability?.state === "rate_limited" &&
+    availability.retryAt &&
+    Date.now() < availability.retryAt
+  )
+    return availability;
   if (availability && Date.now() - availability.checkedAt < 60_000)
-    return availability.available;
+    return availability;
   try {
     const response = await fetch("https://api.groq.com/openai/v1/models", {
       signal: AbortSignal.timeout(5000),
       headers: { Authorization: `Bearer ${key()}` },
     });
     await response.body?.cancel();
-    availability = { checkedAt: Date.now(), available: response.ok };
+    availability = {
+      checkedAt: Date.now(),
+      available: response.ok,
+      state: response.ok ? "ready" : "unavailable",
+    };
   } catch {
-    availability = { checkedAt: Date.now(), available: false };
+    availability = {
+      checkedAt: Date.now(),
+      available: false,
+      state: "unavailable",
+    };
   }
-  return availability.available;
+  return availability;
+}
+export async function providerAvailable() {
+  return (await providerHealth()).available;
 }
 export interface Provider {
   complete(
@@ -62,7 +85,17 @@ class GroqProvider implements Provider {
           temperature: 0.2,
         }),
       });
-    let response = await request();
+    let response: Response;
+    try {
+      response = await request();
+    } catch (failure) {
+      availability = {
+        checkedAt: Date.now(),
+        available: false,
+        state: "unavailable",
+      };
+      throw failure;
+    }
     const waitSeconds = Number(response.headers.get("retry-after"));
     if (response.status === 429 && waitSeconds > 0 && waitSeconds <= 10) {
       await response.body?.cancel();
@@ -73,10 +106,23 @@ class GroqProvider implements Provider {
     }
     if (!response.ok) {
       const retry = Number(response.headers.get("retry-after"));
+      availability = {
+        checkedAt: Date.now(),
+        available: false,
+        state: response.status === 429 ? "rate_limited" : "unavailable",
+        ...(response.status === 429
+          ? { retryAt: Date.now() + Math.max(retry || 60, 10) * 1000 }
+          : {}),
+      };
       throw new Error(
         `AI_HTTP_${response.status}${retry > 0 ? `_RETRY_SECONDS_${Math.ceil(retry)}` : ""}`,
       );
     }
+    availability = {
+      checkedAt: Date.now(),
+      available: true,
+      state: "ready",
+    };
     const data = await response.json();
     return JSON.parse(data.choices[0].message.content);
   }
@@ -90,7 +136,7 @@ export async function classify(message: string) {
   return intentSchema.parse(
     await provider().complete(
       prompts.core +
-        "\nClassify the request, without inventory access. Do not answer it. Return intent edit/query/recommend/shopping/undo and search terms for relevant item names. expirationCorrection is true ONLY if the user explicitly requests correcting an existing expiration date. General inventory queries may have empty terms. Schema: " +
+        "\nClassify the request, without inventory access. Do not answer it. Return intent edit/query/recommend/shopping/undo/unrelated and search terms for relevant item names. Use unrelated for requests that are not about household food inventory, storage, expiration, groceries, cooking from inventory, recipes, meal planning, or shopping based on inventory. A message saying an item was opened is edit. expirationCorrection is true ONLY if the user explicitly requests correcting an existing expiration date. General inventory queries may have empty terms. Schema: " +
         JSON.stringify(z.toJSONSchema(intentSchema)),
       [{ type: "text", text: message }],
       256,

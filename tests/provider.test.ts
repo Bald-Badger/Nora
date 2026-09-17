@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, it, expect, vi } from "vitest";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { interpret } from "../src/ai/provider";
+import { interpret, providerHealth } from "../src/ai/provider";
 let directory: string;
 beforeAll(async () => {
   directory = await mkdtemp("/tmp/nora-provider-test-");
@@ -76,7 +76,7 @@ it("includes the non-food exclusion rule in inventory requests", async () => {
             message: {
               content: JSON.stringify({
                 reply:
-                  "I didn't add the sock because Nora currently tracks refrigerated food and drink.",
+                  "I didn't add the sock because Nora currently tracks food and drink.",
                 assumptions: [],
                 actions: [],
               }),
@@ -95,9 +95,27 @@ it("includes the non-food exclusion rule in inventory requests", async () => {
   const request = JSON.parse(fetchMock.mock.calls[0][1].body as string);
   expect(request.messages[0].content).toContain("obvious non-food object");
   expect(request.messages[0].content).toContain("return no actions");
+  expect(request.messages[0].content).toContain(
+    "location must be exactly Fridge, Freezer, or Shelf",
+  );
+  expect(request.messages[0].content).toContain("frozen dumplings");
+  expect(request.messages[0].content).toContain("ground pepper");
+  expect(request.messages[0].content).toContain("was opened, unsealed, thawed");
+  expect(request.messages[0].content).toContain(
+    "default to a quality review date 12 months",
+  );
+  expect(request.messages[0].content).toContain(
+    'Do not treat the generic word "salad" as a prepared',
+  );
+  expect(request.messages[0].content).toContain(
+    "Select the longest credible endpoint",
+  );
+  expect(request.messages[0].content).toContain(
+    "Never assign them a 3- or 4-day prepared-salad date",
+  );
 });
 
-it("includes receipt and barcode rules in image requests", async () => {
+it("automatically identifies receipt and barcode image types", async () => {
   const fetchMock = vi.fn().mockResolvedValue(
     new Response(
       JSON.stringify({
@@ -119,6 +137,25 @@ it("includes receipt and barcode rules in image requests", async () => {
   vi.stubGlobal("fetch", fetchMock);
   await interpret("Read this receipt", {}, "edit", "data:image/png;base64,AA==");
   const request = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+  expect(request.messages[0].content).toContain("Determine the image type yourself");
   expect(request.messages[0].content).toContain("identifies the image as a receipt");
   expect(request.messages[0].content).toContain("trusted local barcode lookup data");
+});
+
+it("reports a completion rate limit as unavailable immediately", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "120" },
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(interpret("Add milk", {}, "edit")).rejects.toThrow(
+    "AI_HTTP_429_RETRY_SECONDS_120",
+  );
+  await expect(providerHealth()).resolves.toMatchObject({
+    available: false,
+    state: "rate_limited",
+  });
+  expect(fetchMock).toHaveBeenCalledOnce();
 });

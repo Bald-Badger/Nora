@@ -15,7 +15,7 @@ import {
   interpret,
   model,
   promptVersion,
-  providerAvailable,
+  providerHealth,
 } from "@/ai/provider";
 import { applyResult, revision } from "@/lib/inventory";
 import { decodeRetailBarcode, lookupFoodProduct } from "@/lib/barcode";
@@ -23,6 +23,23 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const json = (data: unknown, status = 200) =>
   NextResponse.json(data, { status });
+const messagePageSize = 30;
+async function messagePage(before?: string) {
+  const messages = await db.message.findMany({
+    where: {
+      createdAt: {
+        gte: new Date(Date.now() - days(settingNumber("CHAT_DAYS", 60))),
+      },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    ...(before ? { cursor: { id: before }, skip: 1 } : {}),
+    take: messagePageSize + 1,
+  });
+  return {
+    messages: messages.slice(0, messagePageSize).reverse(),
+    hasMore: messages.length > messagePageSize,
+  };
+}
 export async function GET(req: NextRequest) {
   const path = req.nextUrl.pathname;
   if (path === "/api/health") return json({ ok: true });
@@ -35,7 +52,17 @@ export async function GET(req: NextRequest) {
     });
   if (!(await authorized(req))) return json({ error: "Please sign in." }, 401);
   if (path === "/api/provider-status")
-    return json({ available: await providerAvailable() });
+    return json(await providerHealth());
+  if (path === "/api/messages") {
+    const before = req.nextUrl.searchParams.get("before");
+    if (!before || before.length > 100)
+      return json({ error: "Invalid message cursor." }, 400);
+    try {
+      return json(await messagePage(before));
+    } catch {
+      return json({ error: "Message history changed. Refresh and retry." }, 409);
+    }
+  }
   if (path === "/api/export") {
     const format = req.nextUrl.searchParams.get("format");
     if (format !== "csv" && format !== "json")
@@ -98,20 +125,12 @@ export async function GET(req: NextRequest) {
     });
   }
   if (path === "/api/state") {
-    const [items, messages, pending] = await Promise.all([
+    const [items, chat, pending] = await Promise.all([
       db.item.findMany({
         include: { location: true },
         orderBy: [{ category: "asc" }, { name: "asc" }],
       }),
-      db.message.findMany({
-        where: {
-          createdAt: {
-            gte: new Date(Date.now() - days(settingNumber("CHAT_DAYS", 60))),
-          },
-        },
-        orderBy: { createdAt: "desc" },
-        take: 100,
-      }),
+      messagePage(),
       db.processing.findMany({
         where: { status: "pending" },
         orderBy: { createdAt: "desc" },
@@ -120,7 +139,8 @@ export async function GET(req: NextRequest) {
     ]);
     return json({
       items: items.map((i) => ({ ...i, expired: expired(i) })),
-      messages: messages.reverse(),
+      messages: chat.messages,
+      hasMoreMessages: chat.hasMore,
       pending: pending.map((p) => ({
         id: p.id,
         result: JSON.parse(p.result!),
@@ -264,7 +284,7 @@ export async function POST(req: NextRequest) {
                   quantity: 0,
                   unit: item.unit,
                   category: item.category,
-                  location: "Fridge",
+                  location: item.location.name,
                   notes: item.notes,
                   storage: item.storage,
                   leftover: item.leftover,
@@ -317,7 +337,7 @@ export async function POST(req: NextRequest) {
                   quantity,
                   unit: item.unit,
                   category: item.category,
-                  location: "Fridge",
+                  location: item.location.name,
                   notes: item.notes,
                   storage: item.storage,
                   leftover: item.leftover,
@@ -416,12 +436,12 @@ export async function POST(req: NextRequest) {
         if (imageMode === "barcode") {
           const barcode = await decodeRetailBarcode(original);
           const product = await lookupFoodProduct(barcode);
-          interpretedMessage = `Add one refrigerated food product from this trusted local barcode lookup. Product data: ${JSON.stringify(product)}. Ask for clarification with no actions if this is not a refrigerated food or drink.`;
+          interpretedMessage = `Add one household food or drink product from this trusted local barcode lookup. Product data: ${JSON.stringify(product)}. Infer whether it belongs in Fridge, Freezer, or Shelf unless the user specified otherwise. Ask for clarification with no actions if this is not food or drink.`;
         } else {
           image = `data:image/jpeg;base64,${normalized.toString("base64")}`;
           if (imageMode === "receipt" && !interpretedMessage)
             interpretedMessage =
-              "Extract the refrigerated food and drink purchased on this receipt and propose adding them to inventory.";
+              "Extract the food and drink purchased on this receipt, infer Fridge, Freezer, or Shelf for each item, and propose adding them to inventory.";
         }
       }
       await db.message.create({
@@ -447,6 +467,21 @@ export async function POST(req: NextRequest) {
           processingId,
         },
       });
+      if (intent.intent === "unrelated") {
+        const reply =
+          "Nora only handles household food inventory, storage, expiration, groceries, and cooking based on your inventory.";
+        await db.processing.update({
+          where: { id: processingId },
+          data: {
+            result: JSON.stringify({ reply, assumptions: [], actions: [] }),
+            status: "answered",
+          },
+        });
+        await db.message.create({
+          data: { role: "assistant", content: reply, processingId },
+        });
+        return json({ ok: true });
+      }
       const all = await db.item.findMany({
         include: { location: true },
         orderBy: { updatedAt: "desc" },
