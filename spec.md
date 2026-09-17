@@ -43,9 +43,17 @@ The first version is a minimal, chat-first web interface modeled after a focused
 2. An image-upload button that attaches a photo to a chat message.
 3. A clear inventory button that opens the current-fridge inventory view on demand.
 
-The inventory view is hidden until requested and groups items by category. It should be easy to close and return to the conversation without losing chat state. The database is the canonical inventory record; the inventory view is derived from it and must show the same item details, quantities, units, freshness information, locations, and statuses.
+The inventory view is hidden until requested and groups items by category. It should be easy to close and return to the conversation without losing chat state. The database is the canonical inventory record; the inventory view is a compact scanning surface showing item names, quantities, units, freshness information, useful brands, meaningful storage details, leftover state, and inactive status when relevant. It omits notes, source, confidence, added date, redundant fridge location text, and placeholder values such as `unknown`; those fields remain stored and available in authenticated exports.
 
 Each active inventory item has a trash control for quickly marking it discarded. Discarding is an audited, undoable inventory edit rather than a database deletion. Discarded items leave the default active view and remain visible when past items are included.
+
+Within each category, inventory items are ordered by expiration date, earliest first. Active items that are already expired or expire within seven calendar days display a distinct freshness badge based on Nora's configured household date.
+
+Each active item has one-step decrease and increase controls. These adjustments change the stored quantity by one of the item's displayed unit, use the same transaction and permanent audit trail as chat edits, and can be undone. Decreasing an item to zero marks it empty.
+
+The inventory view offers authenticated CSV and JSON downloads containing the complete inventory, including inactive records and freshness metadata. Exports are generated locally, are not sent to the AI provider, and must not contain credentials, sessions, debug logs, or password hashes.
+
+The header includes an in-app expiration reminder bell. A red count appears for every active expired item and every active item expiring within seven calendar days. Expired leftovers are specifically marked to throw away; other expired items are marked for review or discard. Opening the reminder shows the affected item, quantity, expiration date, and reason. Reminders never remove inventory automatically and are recalculated from the authoritative local inventory and household date.
 
 The first interface tracks only the fridge. The underlying schema remains suitable for pantry, freezer, spices, household supplies, and other rooms in the future.
 
@@ -97,6 +105,8 @@ The MVP inventory accepts food and drink kept in the fridge. Nora must reject ob
 
 If the AI service is unavailable or returns an invalid action, Nora must not change inventory. It should tell the user that chat-based inventory updates are temporarily unavailable and safely record the failure in the debug log.
 
+While signed in, Nora displays a compact AI-provider availability indicator. It uses a cached, credentialed provider health request, reveals no provider diagnostics or credentials to the browser, and does not imply that any particular inference request is guaranteed to succeed.
+
 The MVP assumes the configured AI service is normally available and does not provide a separate manual inventory-editing form. When the service is unavailable, Nora must show a clear on-screen notice and wait for it to recover.
 
 ## AI Instruction Contract
@@ -127,6 +137,10 @@ When asked, the AI agent may use past inventory activity to recommend likely sta
 ## Image Handling
 
 The MVP supports full photo-to-inventory recognition. Nora may send user-uploaded photos of groceries, fridge contents, pantry shelves, receipts, or visible best-by dates to the configured AI provider. The AI identifies the items, quantities, units, and visible expiration information, then proposes inventory additions or updates for Nora to validate and the user to confirm before applying them in one SQL transaction.
+
+The composer provides dedicated receipt and product-barcode capture controls. Receipt images use the normal protected image pipeline and AI confirmation flow; Nora extracts refrigerated food and drink lines while ignoring prices, totals, tax, payment data, loyalty identifiers, and obvious non-food purchases. Receipt dates are not expiration dates.
+
+Barcode images are decoded locally with the repository's pinned ZXing dependency. Nora accepts retail UPC/EAN formats, sends only the decoded numeric barcode to Open Food Facts for a product lookup, and does not send the barcode photo to that service or the AI provider. A named product lookup is passed through the normal AI schema for freshness estimation and shown as a proposal requiring confirmation. Failed decoding and unknown products do not change inventory.
 
 If the API is unavailable, image-capable access is not enabled, or image analysis fails, Nora must clearly report that the image feature is temporarily down. It must not claim the image was processed. Diagnostic details should be logged without exposing credentials.
 
@@ -245,6 +259,7 @@ All session and data-retention periods must be configuration values rather than 
 
 - Nora may send the AI service project source code, inventory records, and inventory-related content needed for the current request.
 - Inventory-related content may include the user's current message, uploaded images, relevant inventory history, locations, timestamps, preferences, and prior inventory actions.
+- For barcode lookup, Nora may send only the decoded numeric barcode to the configured public product database. Barcode images remain local.
 - Send only the subset needed for the current request rather than the entire database or history by default.
 - Never send credentials, API keys, passwords, session tokens, secret files, or unrelated host and household data.
 - Treat debug logs as private diagnostic data; do not send them unless sensitive fields have been removed and the user explicitly requests AI-assisted debugging.
@@ -270,7 +285,14 @@ All session and data-retention periods must be configuration values rather than 
 - Chat-based add, consume, update, discard, query, correction, and undo actions.
 - Item name, quantity, unit, category, location, added date, expiration date, date source, and precision.
 - An on-demand, human-readable fridge inventory grouped by category and synchronized with the database.
+- Expiration-first inventory ordering with expired and seven-day freshness badges.
+- Audited, undoable one-step quantity controls.
+- Authenticated local CSV and JSON inventory exports.
+- A compact AI-provider availability indicator.
 - Full photo-to-inventory recognition, including image attachment, item detection, quantity and unit extraction, and visible expiration information.
+- Receipt-to-inventory proposals with explicit user confirmation.
+- Local UPC/EAN decoding and Open Food Facts product lookup with explicit user confirmation.
+- In-app seven-day expiration reminders and overdue-leftover disposal reminders.
 - AI-estimated expiration when manual information is unavailable.
 - Current date, time, and household time-zone awareness.
 - Persistent inventory edit and debug logs.
@@ -283,18 +305,14 @@ All session and data-retention periods must be configuration values rather than 
 
 ## Nice Later Ideas
 
-- Barcode scanning.
-- Receipt scanning.
 - Recipe integrations.
 - An inventory-based meal discovery page that shows AI-recommended dishes from current non-expired inventory, recipes, and clearly identified missing ingredients.
 - A dedicated food-type shelf-life system for automatic expiration estimates. The MVP uses the configured AI agent's general estimate when no manual date is available.
-- Reminders to throw away leftovers after their latest-use date.
 
 ## Not Planned Yet
 
 - In-fridge cameras or automatic fridge photography.
 - Shared household inventory.
 - Whole-home inventory views. The schema supports later expansion, but the interface remains fridge-only for now.
-- Notifications before food expires. Nora alerts only after an item is definitely expired.
 - Dietary-preference and allergy filters.
 - Built-in weekly meal-planning logic. Open-ended meal planning belongs to the AI agent.

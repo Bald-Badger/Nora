@@ -12,6 +12,28 @@ export const promptVersion = createHash("sha256")
   .digest("hex")
   .slice(0, 16);
 export const model = () => process.env.AI_MODEL || "qwen/qwen3.8-27b";
+const key = () =>
+  readFileSync(
+    /* turbopackIgnore: true */ process.env.AI_KEY_FILE ||
+      "/run/secrets/groq_api_key",
+    "utf8",
+  ).trim();
+let availability: { checkedAt: number; available: boolean } | undefined;
+export async function providerAvailable() {
+  if (availability && Date.now() - availability.checkedAt < 60_000)
+    return availability.available;
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/models", {
+      signal: AbortSignal.timeout(5000),
+      headers: { Authorization: `Bearer ${key()}` },
+    });
+    await response.body?.cancel();
+    availability = { checkedAt: Date.now(), available: response.ok };
+  } catch {
+    availability = { checkedAt: Date.now(), available: false };
+  }
+  return availability.available;
+}
 export interface Provider {
   complete(
     system: string,
@@ -21,17 +43,12 @@ export interface Provider {
 }
 class GroqProvider implements Provider {
   async complete(system: string, content: unknown[], maxTokens = 2048) {
-    const key = readFileSync(
-      /* turbopackIgnore: true */ process.env.AI_KEY_FILE ||
-        "/run/secrets/groq_api_key",
-      "utf8",
-    ).trim();
     const request = () =>
       fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         signal: AbortSignal.timeout(60000),
         headers: {
-          Authorization: `Bearer ${key}`,
+          Authorization: `Bearer ${key()}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({

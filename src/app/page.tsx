@@ -12,6 +12,14 @@ import {
   Shield,
   AlertTriangle,
   Trash2,
+  Minus,
+  Plus,
+  Download,
+  Wifi,
+  WifiOff,
+  Bell,
+  ScanBarcode,
+  ReceiptText,
 } from "lucide-react";
 type Item = {
   id: string;
@@ -54,11 +62,18 @@ export default function Home() {
   const [text, setText] = useState(""),
     [image, setImage] = useState<File | null>(null),
     [preview, setPreview] = useState(""),
+    [imageMode, setImageMode] = useState<"photo" | "receipt" | "barcode">(
+      "photo",
+    ),
     [open, setOpen] = useState(false),
+    [remindersOpen, setRemindersOpen] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [search, setSearch] = useState(""),
-    [showPast, setShowPast] = useState(false);
+    [showPast, setShowPast] = useState(false),
+    [householdToday, setHouseholdToday] = useState(""),
+    [providerOnline, setProviderOnline] = useState<boolean | null>(null),
+    [exportFormat, setExportFormat] = useState("csv");
   const fileRef = useRef<HTMLInputElement>(null),
     end = useRef<HTMLDivElement>(null),
     drawer = useRef<HTMLElement>(null),
@@ -96,13 +111,25 @@ export default function Home() {
     setItems(d.items);
     setMessages(d.messages);
     setPending(d.pending);
+    setHouseholdToday(d.today || new Date().toISOString().slice(0, 10));
+  }
+  async function checkProvider() {
+    try {
+      const d = await api("provider-status");
+      setProviderOnline(d.available);
+    } catch {
+      setProviderOnline(false);
+    }
   }
   useEffect(() => {
     api("auth")
       .then((d) => {
         setAuth(d.authenticated);
         setConfigured(d.configured);
-        if (d.authenticated) refresh().catch((e) => setError(e.message));
+        if (d.authenticated) {
+          refresh().catch((e) => setError(e.message));
+          checkProvider();
+        }
       })
       .catch(() => setError("Nora is unavailable. Refresh to retry."));
   }, []);
@@ -112,10 +139,17 @@ export default function Home() {
   useEffect(() => {
     if (!auth) return;
     const update = () => {
-      if (document.visibilityState === "visible") refresh().catch(() => {});
+      if (document.visibilityState === "visible") {
+        refresh().catch(() => {});
+        checkProvider();
+      }
     };
     window.addEventListener("focus", update);
-    return () => window.removeEventListener("focus", update);
+    const providerTimer = window.setInterval(checkProvider, 60_000);
+    return () => {
+      window.removeEventListener("focus", update);
+      window.clearInterval(providerTimer);
+    };
   }, [auth]);
   useEffect(() => {
     if (!image) {
@@ -162,6 +196,7 @@ export default function Home() {
         setItems([]);
         setMessages([]);
         setPending([]);
+        setProviderOnline(null);
       } else await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -189,11 +224,15 @@ export default function Home() {
         };
       }
       form.set("requestId", pendingRequest.current.id);
-      if (image) form.set("image", image);
+      if (image) {
+        form.set("image", image);
+        form.set("imageMode", imageMode);
+      }
       await api("chat", form);
       pendingRequest.current = null;
       setText("");
       setImage(null);
+      setImageMode("photo");
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -233,6 +272,7 @@ export default function Home() {
                 setPassword("");
                 setAuth(true);
                 await refresh();
+                checkProvider();
               } catch (e) {
                 setError((e as Error).message);
               } finally {
@@ -263,15 +303,50 @@ export default function Home() {
         )}
       </main>
     );
-  const visible = items.filter(
-    (i) =>
-      (showPast || !["consumed", "discarded", "empty"].includes(i.status)) &&
-      `${i.name} ${i.brand}`.toLowerCase().includes(search.toLowerCase()),
-  );
+  const visible = items
+    .filter(
+      (i) =>
+        (showPast ||
+          !["consumed", "discarded", "empty"].includes(i.status)) &&
+        `${i.name} ${i.brand}`.toLowerCase().includes(search.toLowerCase()),
+    )
+    .sort(
+      (a, b) =>
+        a.expiration.localeCompare(b.expiration) || a.name.localeCompare(b.name),
+    );
   const expiredItems = items.filter(
     (i) => i.expired && !["consumed", "discarded", "empty"].includes(i.status),
   );
-  const categories = [...new Set(visible.map((i) => i.category))];
+  const categories = [...new Set(visible.map((i) => i.category))].sort();
+  const freshness = (item: Item) => {
+    const current = householdToday || new Date().toISOString().slice(0, 10);
+    const remaining = Math.round(
+      (Date.parse(`${item.expiration}T00:00:00Z`) -
+        Date.parse(`${current}T00:00:00Z`)) /
+        86_400_000,
+    );
+    if (remaining < 0) return { className: "expired", label: "Expired" };
+    if (remaining === 0) return { className: "soon", label: "Expires today" };
+    if (remaining <= 7)
+      return {
+        className: "soon",
+        label: `Expires in ${remaining} ${remaining === 1 ? "day" : "days"}`,
+      };
+    return null;
+  };
+  const reminderItems = items
+    .filter(
+      (item) =>
+        !["consumed", "discarded", "empty"].includes(item.status) &&
+        (item.expired ||
+          (!item.expired &&
+            Date.parse(`${item.expiration}T00:00:00Z`) -
+              Date.parse(
+                `${householdToday || new Date().toISOString().slice(0, 10)}T00:00:00Z`,
+              ) <=
+              7 * 86_400_000)),
+    )
+    .sort((a, b) => a.expiration.localeCompare(b.expiration));
   return (
     <div className="app">
       <header>
@@ -280,6 +355,17 @@ export default function Home() {
           Nora <span className="section-label">/ Fridge</span>
         </div>
         <nav>
+          <button
+            className={`icon reminder-button ${reminderItems.length ? "has-reminders" : ""}`}
+            title="Expiration reminders"
+            aria-label={`Expiration reminders${reminderItems.length ? `, ${reminderItems.length} items` : ""}`}
+            onClick={() => setRemindersOpen(true)}
+          >
+            <Bell size={18} />
+            {reminderItems.length > 0 && (
+              <span className="reminder-count">{reminderItems.length}</span>
+            )}
+          </button>
           <button
             ref={inventoryButton}
             onClick={() => setOpen(true)}
@@ -340,7 +426,7 @@ export default function Home() {
         ))}
         {pending.map((p) => (
           <section className="proposal" key={p.id}>
-            <h2>Review photo inventory</h2>
+            <h2>Review inventory changes</h2>
             <p>{p.result.reply}</p>
             {p.result.actions.map((a, i) => (
               <div className="proposal-row" key={i}>
@@ -397,7 +483,14 @@ export default function Home() {
           {preview && (
             <div className="attachment">
               <img src={preview} alt="Attached grocery photo" />
-              <span>{image?.name}</span>
+              <span>
+                {imageMode === "receipt"
+                  ? "Receipt"
+                  : imageMode === "barcode"
+                    ? "Barcode"
+                    : "Photo"}
+                {image?.name ? ` · ${image.name}` : ""}
+              </span>
               <button
                 type="button"
                 className="icon"
@@ -430,6 +523,7 @@ export default function Home() {
               ref={fileRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
+              capture="environment"
               hidden
               onChange={(e) => {
                 const f = e.target.files?.[0];
@@ -445,9 +539,38 @@ export default function Home() {
               title="Attach photo"
               aria-label="Attach photo"
               disabled={busy}
-              onClick={() => fileRef.current?.click()}
+              onClick={() => {
+                setImageMode("photo");
+                fileRef.current?.click();
+              }}
             >
               <Paperclip size={19} />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              title="Scan receipt"
+              aria-label="Scan receipt"
+              disabled={busy}
+              onClick={() => {
+                setImageMode("receipt");
+                fileRef.current?.click();
+              }}
+            >
+              <ReceiptText size={19} />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              title="Scan product barcode"
+              aria-label="Scan product barcode"
+              disabled={busy}
+              onClick={() => {
+                setImageMode("barcode");
+                fileRef.current?.click();
+              }}
+            >
+              <ScanBarcode size={19} />
             </button>
             <button
               type="button"
@@ -470,13 +593,84 @@ export default function Home() {
           </div>
         </form>
         <div className="footer-note">
-          Nora ·{" "}
+          <span
+            className={`provider-status ${providerOnline === false ? "unavailable" : ""}`}
+            title={
+              providerOnline === false
+                ? "AI provider unavailable"
+                : providerOnline === true
+                  ? "AI provider available"
+                  : "Checking AI provider"
+            }
+          >
+            {providerOnline === false ? (
+              <WifiOff size={12} />
+            ) : (
+              <Wifi size={12} />
+            )}
+            {providerOnline === null
+              ? "AI checking"
+              : providerOnline
+                ? "AI ready"
+                : "AI unavailable"}
+          </span>
+          <span>·</span>
           {new Intl.DateTimeFormat("en", {
             month: "short",
             day: "numeric",
           }).format(new Date())}
         </div>
       </footer>
+      {remindersOpen && (
+        <div
+          className="overlay reminder-overlay"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setRemindersOpen(false);
+          }}
+        >
+          <section
+            className="reminder-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reminder-title"
+          >
+            <div className="drawer-heading">
+              <div>
+                <span className="eyebrow">ATTENTION</span>
+                <h2 id="reminder-title">Expiration reminders</h2>
+              </div>
+              <button
+                className="icon"
+                aria-label="Close reminders"
+                onClick={() => setRemindersOpen(false)}
+              >
+                <X />
+              </button>
+            </div>
+            {!reminderItems.length && (
+              <p className="muted">Nothing needs attention right now.</p>
+            )}
+            {reminderItems.map((item) => (
+              <article className="reminder-item" key={item.id}>
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>{item.name}</strong>
+                  <p>
+                    {item.leftover && item.expired
+                      ? "Throw away this expired leftover"
+                      : item.expired
+                        ? "Expired · review or discard"
+                      : freshness(item)?.label || "Expiring soon"}
+                  </p>
+                  <small>
+                    {item.quantity} {item.unit} · {item.expiration}
+                  </small>
+                </div>
+              </article>
+            ))}
+          </section>
+        </div>
+      )}
       {open && (
         <div
           className="overlay"
@@ -512,14 +706,34 @@ export default function Home() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={showPast}
-                onChange={(e) => setShowPast(e.target.checked)}
-              />
-              Include consumed and discarded
-            </label>
+            <div className="inventory-tools">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={showPast}
+                  onChange={(e) => setShowPast(e.target.checked)}
+                />
+                Include past
+              </label>
+              <div className="export-tools">
+                <select
+                  aria-label="Export format"
+                  value={exportFormat}
+                  onChange={(e) => setExportFormat(e.target.value)}
+                >
+                  <option value="csv">CSV</option>
+                  <option value="json">JSON</option>
+                </select>
+                <a
+                  className="icon-button"
+                  href={`/api/export?format=${exportFormat}`}
+                  title={`Download inventory as ${exportFormat.toUpperCase()}`}
+                  aria-label={`Download inventory as ${exportFormat.toUpperCase()}`}
+                >
+                  <Download size={17} />
+                </a>
+              </div>
+            </div>
             {!visible.length && <p className="muted">No items yet.</p>}
             {categories.map((category) => (
               <section className="category" key={category}>
@@ -531,55 +745,100 @@ export default function Home() {
                 </h3>
                 {visible
                   .filter((i) => i.category === category)
-                  .map((i) => (
-                    <article className="inventory-item" key={i.id}>
-                      <div className="item-title">
-                        <strong>{i.name}</strong>
-                        <div className="item-actions">
-                          <span>
-                            {i.quantity} {i.unit}
-                          </span>
-                          {!["consumed", "discarded", "empty"].includes(
-                            i.status,
-                          ) && (
-                            <button
-                              className="icon trash"
-                              title={`Discard ${i.name}`}
-                              aria-label={`Discard ${i.name}`}
-                              disabled={busy}
-                              onClick={() => action("discard", { id: i.id })}
-                            >
-                              <Trash2 size={17} />
-                            </button>
-                          )}
+                  .map((i) => {
+                    const fresh = freshness(i);
+                    const active = ![
+                      "consumed",
+                      "discarded",
+                      "empty",
+                    ].includes(i.status);
+                    const brand = i.brand.trim();
+                    const showBrand =
+                      brand &&
+                      !["unknown", "none", "n/a"].includes(
+                        brand.toLowerCase(),
+                      );
+                    const storage = i.storage.trim();
+                    const showStorage =
+                      storage &&
+                      !["fridge", i.location.name.toLowerCase()].includes(
+                        storage.toLowerCase(),
+                      );
+                    const details = [
+                      showStorage ? storage : "",
+                      !active ? i.status : "",
+                      i.leftover ? "Leftover" : "",
+                    ].filter(Boolean);
+                    return (
+                      <article className="inventory-item" key={i.id}>
+                        <div className="item-title">
+                          <div className="item-name">
+                            <strong>{i.name}</strong>
+                            {fresh && (
+                              <span className={`freshness ${fresh.className}`}>
+                                {fresh.label}
+                              </span>
+                            )}
+                          </div>
+                          <div className="item-actions">
+                            {active && (
+                              <button
+                                className="icon"
+                                title={`Decrease ${i.name} by 1 ${i.unit}`}
+                                aria-label={`Decrease ${i.name} by 1 ${i.unit}`}
+                                disabled={busy}
+                                onClick={() =>
+                                  action("quantity", { id: i.id, delta: -1 })
+                                }
+                              >
+                                <Minus size={16} />
+                              </button>
+                            )}
+                            <span className="quantity-value">
+                              {i.quantity} {i.unit}
+                            </span>
+                            {active && (
+                              <button
+                                className="icon"
+                                title={`Increase ${i.name} by 1 ${i.unit}`}
+                                aria-label={`Increase ${i.name} by 1 ${i.unit}`}
+                                disabled={busy}
+                                onClick={() =>
+                                  action("quantity", { id: i.id, delta: 1 })
+                                }
+                              >
+                                <Plus size={16} />
+                              </button>
+                            )}
+                            {active && (
+                              <button
+                                className="icon trash"
+                                title={`Discard ${i.name}`}
+                                aria-label={`Discard ${i.name}`}
+                                disabled={busy}
+                                onClick={() => action("discard", { id: i.id })}
+                              >
+                                <Trash2 size={17} />
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      {i.brand && <p className="muted">{i.brand}</p>}
-                      <p className={i.expired ? "expired" : "muted"}>
-                        {i.expired ? "Expired · " : ""}
-                        {i.expiration} ·{" "}
-                        {i.dateSource === "ai"
-                          ? "AI estimated"
-                          : i.datePrecision === "exact"
-                            ? "Exact"
-                            : "Approximate"}{" "}
-                        · {i.dateKind}
-                      </p>
-                      <p className="muted">
-                        {i.location.name}
-                        {i.storage ? ` / ${i.storage}` : ""} · {i.status}
-                        {i.leftover ? " · Leftover" : ""}
-                      </p>
-                      {i.notes && <p>{i.notes}</p>}
-                      <small className="muted">
-                        Added {i.createdAt.slice(0, 10)}
-                        {i.source ? ` · From ${i.source}` : ""}
-                        {Number.isFinite(i.confidence)
-                          ? ` · ${Math.round(i.confidence * 100)}% confidence`
-                          : ""}
-                      </small>
-                    </article>
-                  ))}
+                        {showBrand && <p className="muted">{brand}</p>}
+                        <p className={i.expired ? "expired" : "muted"}>
+                          {i.expiration} ·{" "}
+                          {i.dateSource === "ai"
+                            ? "AI estimated"
+                            : i.datePrecision === "exact"
+                              ? "Exact"
+                              : "Approximate"}{" "}
+                          · {i.dateKind}
+                        </p>
+                        {details.length > 0 && (
+                          <p className="muted">{details.join(" · ")}</p>
+                        )}
+                      </article>
+                    );
+                  })}
               </section>
             ))}
           </aside>

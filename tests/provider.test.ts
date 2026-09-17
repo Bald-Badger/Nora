@@ -96,3 +96,29 @@ it("includes the non-food exclusion rule in inventory requests", async () => {
   expect(request.messages[0].content).toContain("obvious non-food object");
   expect(request.messages[0].content).toContain("return no actions");
 });
+
+it("includes receipt and barcode rules in image requests", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                reply: "Nothing readable.",
+                assumptions: [],
+                actions: [],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  await interpret("Read this receipt", {}, "edit", "data:image/png;base64,AA==");
+  const request = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+  expect(request.messages[0].content).toContain("identifies the image as a receipt");
+  expect(request.messages[0].content).toContain("trusted local barcode lookup data");
+});

@@ -58,11 +58,42 @@ test("renders populated inventory and photo confirmation", async ({
     dateKind: "quality",
     expired: false,
     status: "available",
-    notes: "",
+    notes: "Added by user. Whole and uncut.",
     storage: "Top shelf",
     leftover: false,
     createdAt: "2026-09-16",
     location: { name: "Fridge" },
+  };
+  const laterItem = {
+    ...item,
+    id: "later-fixture",
+    name: "Butter",
+    brand: "unknown",
+    quantity: 1,
+    unit: "pack",
+    expiration: "2027-02-01",
+    storage: "fridge",
+  };
+  const expiredLeftover = {
+    ...item,
+    id: "leftover-fixture",
+    name: "Rice bowl",
+    brand: "",
+    quantity: 1,
+    unit: "container",
+    category: "Leftovers",
+    expiration: "2026-12-28",
+    expired: true,
+    leftover: true,
+    storage: "Middle shelf",
+  };
+  const expiredMilk = {
+    ...item,
+    id: "expired-milk-fixture",
+    name: "Old milk",
+    quantity: 1,
+    expiration: "2026-12-27",
+    expired: true,
   };
   await page.route("**/api/auth", (r) =>
     r.fulfill({ json: { authenticated: true, configured: true } }),
@@ -70,7 +101,8 @@ test("renders populated inventory and photo confirmation", async ({
   await page.route("**/api/state", (r) =>
     r.fulfill({
       json: {
-        items: [item],
+        items: [laterItem, expiredLeftover, expiredMilk, item],
+        today: "2026-12-29",
         messages: [
           {
             id: "1",
@@ -91,10 +123,33 @@ test("renders populated inventory and photo confirmation", async ({
       },
     }),
   );
+  await page.route("**/api/provider-status", (r) =>
+    r.fulfill({ json: { available: true } }),
+  );
   await page.goto("/");
   await expect(
     page.getByRole("button", { name: "Confirm", exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scan receipt" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Scan product barcode" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /Expiration reminders, 3 items/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Expiration reminders" }),
+  ).toBeVisible();
+  await expect(page.getByText("Expires in 3 days", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Throw away this expired leftover", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Expired · review or discard", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: `test-results/${info.project.name}-reminders.png`,
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Close reminders" }).click();
   await page.screenshot({
     path: `test-results/${info.project.name}-proposal.png`,
     fullPage: true,
@@ -106,6 +161,28 @@ test("renders populated inventory and photo confirmation", async ({
   await expect(
     page.getByRole("button", { name: "Discard Whole milk" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Decrease Whole milk by 1 cartons" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Increase Whole milk by 1 cartons" }),
+  ).toBeVisible();
+  await expect(page.getByText("Expires in 3 days", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Export format")).toHaveValue("csv");
+  await expect(
+    page.getByRole("link", { name: "Download inventory as CSV" }),
+  ).toHaveAttribute("href", "/api/export?format=csv");
+  const inventoryNames = page.locator(".inventory-item strong");
+  await expect(inventoryNames.nth(0)).toHaveText("Old milk");
+  await expect(inventoryNames.nth(1)).toHaveText("Whole milk");
+  await expect(inventoryNames.nth(2)).toHaveText("Butter");
+  await expect(
+    page.getByText("Added by user. Whole and uncut.", { exact: true }),
+  ).not.toBeVisible();
+  await expect(page.getByText("unknown", { exact: true })).not.toBeVisible();
+  await expect(page.getByText(/From chat/)).not.toBeVisible();
+  await expect(page.getByText(/confidence/)).not.toBeVisible();
+  await expect(page.getByText(/Added 2026/)).not.toBeVisible();
   await page.screenshot({
     path: `test-results/${info.project.name}-inventory.png`,
     fullPage: true,

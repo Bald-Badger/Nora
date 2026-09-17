@@ -10,8 +10,15 @@ import {
   sameOrigin,
   verifyPassword,
 } from "@/lib/auth";
-import { classify, interpret, model, promptVersion } from "@/ai/provider";
+import {
+  classify,
+  interpret,
+  model,
+  promptVersion,
+  providerAvailable,
+} from "@/ai/provider";
 import { applyResult, revision } from "@/lib/inventory";
+import { decodeRetailBarcode, lookupFoodProduct } from "@/lib/barcode";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const json = (data: unknown, status = 200) =>
@@ -27,6 +34,69 @@ export async function GET(req: NextRequest) {
       })),
     });
   if (!(await authorized(req))) return json({ error: "Please sign in." }, 401);
+  if (path === "/api/provider-status")
+    return json({ available: await providerAvailable() });
+  if (path === "/api/export") {
+    const format = req.nextUrl.searchParams.get("format");
+    if (format !== "csv" && format !== "json")
+      return json({ error: "Choose CSV or JSON." }, 400);
+    const items = await db.item.findMany({
+      include: { location: true },
+      orderBy: [{ category: "asc" }, { expiration: "asc" }, { name: "asc" }],
+    });
+    const exportedAt = new Date().toISOString();
+    const rows = items.map(
+      ({ location, locationId: _locationId, version: _version, ...item }) => ({
+        ...item,
+        location: location.name,
+      }),
+    );
+    const filename = `nora-inventory-${today()}.${format}`;
+    if (format === "json")
+      return new NextResponse(JSON.stringify({ exportedAt, items: rows }, null, 2), {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "Cache-Control": "no-store",
+        },
+      });
+    const fields = [
+      "name",
+      "brand",
+      "quantity",
+      "unit",
+      "category",
+      "location",
+      "storage",
+      "status",
+      "expiration",
+      "dateSource",
+      "datePrecision",
+      "dateKind",
+      "confidence",
+      "leftover",
+      "notes",
+      "source",
+      "createdAt",
+      "updatedAt",
+    ] as const;
+    const cell = (value: unknown) => {
+      let text = value instanceof Date ? value.toISOString() : String(value ?? "");
+      if (/^[=+\-@]/.test(text)) text = `'${text}`;
+      return `"${text.replaceAll('"', '""')}"`;
+    };
+    const csv = [
+      fields.map(cell).join(","),
+      ...rows.map((row) => fields.map((field) => cell(row[field])).join(",")),
+    ].join("\r\n");
+    return new NextResponse(csv, {
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  }
   if (path === "/api/state") {
     const [items, messages, pending] = await Promise.all([
       db.item.findMany({
@@ -55,6 +125,7 @@ export async function GET(req: NextRequest) {
         id: p.id,
         result: JSON.parse(p.result!),
       })),
+      today: today(),
     });
   }
   return json({ error: "Not found" }, 404);
@@ -212,6 +283,59 @@ export async function POST(req: NextRequest) {
       await applyResult(processing.id);
       return json({ ok: true });
     }
+    if (path === "/api/quantity") {
+      const { id, delta } = await req.json();
+      if (typeof id !== "string" || (delta !== 1 && delta !== -1))
+        return json({ error: "Invalid quantity adjustment." }, 400);
+      const item = await db.item.findUnique({
+        where: { id },
+        include: { location: true },
+      });
+      if (!item || ["consumed", "discarded", "empty"].includes(item.status))
+        return json({ error: "That item is no longer active." }, 409);
+      const quantity = item.quantity + delta;
+      if (quantity < 0 || quantity > 100000)
+        return json({ error: "Quantity cannot be adjusted further." }, 409);
+      const processing = await db.processing.create({
+        data: {
+          requestId: randomUUID(),
+          original: `${delta > 0 ? "Increase" : "Decrease"} ${item.name} by 1 ${item.unit}`,
+          promptVersion: "local-quantity-v1",
+          model: "local",
+          baseRevision: await revision(),
+          status: "pending",
+          result: JSON.stringify({
+            reply: "",
+            assumptions: [],
+            actions: [
+              {
+                operation: "update",
+                id: item.id,
+                item: {
+                  name: item.name,
+                  brand: item.brand,
+                  quantity,
+                  unit: item.unit,
+                  category: item.category,
+                  location: "Fridge",
+                  notes: item.notes,
+                  storage: item.storage,
+                  leftover: item.leftover,
+                  status: quantity === 0 ? "empty" : item.status,
+                  expiration: item.expiration,
+                  dateSource: item.dateSource,
+                  datePrecision: item.datePrecision,
+                  dateKind: item.dateKind,
+                  confidence: item.confidence,
+                },
+              },
+            ],
+          }),
+        },
+      });
+      await applyResult(processing.id);
+      return json({ ok: true });
+    }
     if (path !== "/api/chat") return json({ error: "Not found" }, 404);
     if (busy)
       return json({ error: "Nora is finishing your previous request." }, 409);
@@ -220,11 +344,13 @@ export async function POST(req: NextRequest) {
     try {
       const form = await req.formData();
       const message = String(form.get("message") || "").trim();
+      const imageMode = String(form.get("imageMode") || "photo");
       const requestId = String(form.get("requestId") || "");
       const file = form.get("image");
       if (
         !/^[a-f0-9-]{36}$/.test(requestId) ||
         message.length > 8000 ||
+        !["photo", "receipt", "barcode"].includes(imageMode) ||
         (!message && !(file instanceof File))
       )
         return json({ error: "Enter a message or attach a photo." }, 400);
@@ -245,7 +371,13 @@ export async function POST(req: NextRequest) {
       const processing = await db.processing.create({
         data: {
           requestId,
-          original: message,
+          original:
+            message ||
+            (imageMode === "receipt"
+              ? "Receipt inventory request"
+              : imageMode === "barcode"
+                ? "Barcode inventory request"
+                : "Photo inventory request"),
           promptVersion,
           model: model(),
           baseRevision: await revision(),
@@ -253,7 +385,10 @@ export async function POST(req: NextRequest) {
       });
       processingId = processing.id;
       let image: string | undefined;
+      let interpretedMessage = message;
+      let hasUpload = false;
       if (file instanceof File && file.size) {
+        hasUpload = true;
         if (file.size > 8 * 1024 * 1024) throw new Error("IMAGE_SIZE");
         const original = Buffer.from(await file.arrayBuffer());
         const metadata = await sharp(original, {
@@ -278,19 +413,34 @@ export async function POST(req: NextRequest) {
         await db.upload.create({
           data: { processingId, path, mime: `image/${metadata.format}` },
         });
-        image = `data:image/jpeg;base64,${normalized.toString("base64")}`;
+        if (imageMode === "barcode") {
+          const barcode = await decodeRetailBarcode(original);
+          const product = await lookupFoodProduct(barcode);
+          interpretedMessage = `Add one refrigerated food product from this trusted local barcode lookup. Product data: ${JSON.stringify(product)}. Ask for clarification with no actions if this is not a refrigerated food or drink.`;
+        } else {
+          image = `data:image/jpeg;base64,${normalized.toString("base64")}`;
+          if (imageMode === "receipt" && !interpretedMessage)
+            interpretedMessage =
+              "Extract the refrigerated food and drink purchased on this receipt and propose adding them to inventory.";
+        }
       }
       await db.message.create({
         data: {
           role: "user",
-          content: message || "Photo inventory request",
+          content:
+            message ||
+            (imageMode === "receipt"
+              ? "Receipt inventory request"
+              : imageMode === "barcode"
+                ? "Barcode inventory request"
+                : "Photo inventory request"),
           processingId,
         },
       });
       const intent =
-        image && !message
+        hasUpload && !message
           ? { intent: "edit", terms: [], expirationCorrection: false }
-          : await classify(message);
+          : await classify(interpretedMessage);
       await db.debugLog.create({
         data: {
           code: `AI_INTENT_${intent.intent.toUpperCase()}`,
@@ -365,7 +515,7 @@ export async function POST(req: NextRequest) {
           .map((m) => ({ ...m, content: m.content.slice(0, 1500) })),
       };
       const result = await interpret(
-        message || "Identify grocery items to add.",
+        interpretedMessage || "Identify grocery items to add.",
         context,
         intent.intent,
         image,
@@ -396,7 +546,7 @@ export async function POST(req: NextRequest) {
             processingId,
           },
         });
-      else if (!image) await applyResult(processingId);
+      else if (!hasUpload) await applyResult(processingId);
       await db.debugLog
         .create({ data: { code: "AI_VALIDATED", processingId } })
         .catch(() => {});
@@ -412,16 +562,27 @@ export async function POST(req: NextRequest) {
         });
       const safeCode =
         failure instanceof Error &&
-        /^AI_HTTP_\d+(?:_RETRY_SECONDS_\d+)?$/.test(failure.message)
+        (/^AI_HTTP_\d+(?:_RETRY_SECONDS_\d+)?$/.test(failure.message) ||
+          ["BARCODE_NOT_FOUND", "BARCODE_PRODUCT_NOT_FOUND"].includes(
+            failure.message,
+          ))
           ? failure.message
           : "AI_OR_VALIDATION_FAILURE";
       await db.debugLog.create({ data: { code: safeCode, processingId } });
+      const barcodeFailure =
+        failure instanceof Error &&
+        ["BARCODE_NOT_FOUND", "BARCODE_PRODUCT_NOT_FOUND"].includes(
+          failure.message,
+        );
       return json(
         {
-          error:
-            "AI or image processing is unavailable, or the response could not be safely applied. Inventory was not changed. Please try again.",
+          error: barcodeFailure
+            ? failure.message === "BARCODE_NOT_FOUND"
+              ? "No supported grocery barcode was found. Hold the camera steady and fill the frame with the barcode."
+              : "The barcode was read, but no named food product was found. Inventory was not changed."
+            : "AI or image processing is unavailable, or the response could not be safely applied. Inventory was not changed. Please try again.",
         },
-        503,
+        barcodeFailure ? 422 : 503,
       );
     } finally {
       busy = false;

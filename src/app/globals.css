@@ -110,6 +110,30 @@ nav {
   gap: 10px;
   align-items: center;
 }
+.reminder-button {
+  position: relative;
+}
+.reminder-button.has-reminders {
+  color: #ffb0a8;
+}
+.reminder-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: #cf4e4e;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
 .icon {
   width: 38px;
   height: 38px;
@@ -247,10 +271,22 @@ footer {
   padding: 6px;
 }
 .footer-note {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   color: var(--muted);
   font-size: 11px;
   margin-top: 8px;
+}
+.provider-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a9cdb0;
+}
+.provider-status.unavailable {
+  color: #f4b2a4;
 }
 .attachment {
   display: flex;
@@ -297,6 +333,37 @@ footer {
   display: flex;
   justify-content: flex-end;
 }
+.reminder-overlay {
+  align-items: flex-start;
+  justify-content: center;
+  padding: 92px 18px 18px;
+}
+.reminder-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 110px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid #714749;
+  border-radius: 6px;
+  background: #1d2021;
+}
+.reminder-item {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 10px;
+  padding: 13px 0;
+  border-top: 1px solid var(--line);
+  color: #f4b2a4;
+}
+.reminder-item strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.reminder-item p,
+.reminder-item small {
+  display: block;
+  color: var(--muted);
+}
 aside {
   background: #1d2021;
   width: 480px;
@@ -328,6 +395,35 @@ aside {
   width: 16px;
   height: 16px;
 }
+.inventory-tools,
+.export-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.export-tools select {
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 7px;
+}
+.icon-button {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.icon-button:hover {
+  background: #303436;
+}
 .category h3 {
   font-size: 12px;
   text-transform: uppercase;
@@ -338,7 +434,7 @@ aside {
   padding: 18px 0 10px;
 }
 .inventory-item {
-  padding: 16px 0;
+  padding: 12px 0;
   border-bottom: 1px solid #303335;
   font-size: 13px;
   overflow-wrap: anywhere;
@@ -346,24 +442,50 @@ aside {
 .item-title {
   display: flex;
   justify-content: space-between;
-  gap: 15px;
+  gap: 10px;
   font-size: 15px;
 }
 .item-title strong {
   font-weight: 500;
   min-width: 0;
 }
-.item-title span {
+.item-name {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.freshness {
+  border: 1px solid #735a3f;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #f5c89b;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.freshness.expired {
+  border-color: #7d4a4a;
+  color: #f4b2a4;
+}
+.quantity-value {
   flex-shrink: 1;
-  max-width: 45%;
+  min-width: 54px;
+  max-width: 90px;
   text-align: right;
+  overflow-wrap: anywhere;
 }
 .item-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 5px;
+  gap: 3px;
   min-width: 0;
+  flex-wrap: wrap;
+}
+.inventory-item > p {
+  line-height: 1.4;
 }
 .item-actions .icon {
   width: 32px;
