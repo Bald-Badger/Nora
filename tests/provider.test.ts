@@ -5,10 +5,14 @@ let directory: string;
 beforeAll(async () => {
   directory = await mkdtemp("/tmp/nora-provider-test-");
   await writeFile(`${directory}/key`, "fixture-not-a-real-key");
+  await writeFile(`${directory}/gemini-key`, "fixture-not-a-real-gemini-key");
   process.env.AI_KEY_FILE = `${directory}/key`;
+  process.env.GEMINI_KEY_FILE = `${directory}/gemini-key`;
 });
 afterAll(async () => {
   delete process.env.AI_KEY_FILE;
+  delete process.env.GEMINI_KEY_FILE;
+  delete process.env.AI_GEMINI_FALLBACK;
   vi.unstubAllGlobals();
   await rm(directory, { recursive: true, force: true });
 });
@@ -143,6 +147,7 @@ it("automatically identifies receipt and barcode image types", async () => {
 });
 
 it("reports a completion rate limit as unavailable immediately", async () => {
+  process.env.AI_GEMINI_FALLBACK = "false";
   const fetchMock = vi.fn().mockResolvedValue(
     new Response("rate limited", {
       status: 429,
@@ -157,5 +162,48 @@ it("reports a completion rate limit as unavailable immediately", async () => {
     available: false,
     state: "rate_limited",
   });
-  expect(fetchMock).toHaveBeenCalledOnce();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  delete process.env.AI_GEMINI_FALLBACK;
+});
+
+it("falls back to Gemini when Groq cannot complete a request", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      reply: "Added milk.",
+                      assumptions: [],
+                      actions: [],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(interpret("Add milk", {}, "edit")).resolves.toMatchObject({
+    reply: "Added milk.",
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(String(fetchMock.mock.calls[0][0])).toContain("api.groq.com");
+  expect(String(fetchMock.mock.calls[1][0])).toContain(
+    "generativelanguage.googleapis.com",
+  );
+  await expect(providerHealth()).resolves.toMatchObject({
+    available: true,
+    state: "ready",
+    provider: "gemini",
+  });
 });

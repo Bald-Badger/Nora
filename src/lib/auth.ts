@@ -19,11 +19,12 @@ export function verifyPassword(password: string, saved: string) {
 }
 export const digest = (token: string) =>
   createHash("sha256").update(token).digest("hex");
-export async function authorized(req: NextRequest) {
+export type SessionScope = "nora" | "menu";
+export async function authorized(req: NextRequest, scope: SessionScope = "nora") {
   const token = req.cookies.get(cookieName)?.value;
   if (!token) return false;
   const session = await db.session.findUnique({ where: { id: digest(token) } });
-  if (!session) return false;
+  if (!session || session.scope !== scope) return false;
   const now = Date.now();
   if (
     now - session.lastSeen.getTime() >
@@ -40,9 +41,12 @@ export async function authorized(req: NextRequest) {
   });
   return true;
 }
-export function sameOrigin(req: NextRequest) {
+export function sameOrigin(req: NextRequest, scope: SessionScope = "nora") {
+  const expected =
+    scope === "menu"
+      ? process.env.MENU_ORIGIN || "https://menu.shuainium.com"
+      : process.env.APP_ORIGIN || "https://nora.shuainium.com";
   return (
-    req.headers.get("origin") ===
-    (process.env.APP_ORIGIN || "https://nora.shuainium.com")
+    req.headers.get("origin") === expected
   );
 }

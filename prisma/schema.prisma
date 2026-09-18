@@ -88,11 +88,95 @@ model Setting {
 }
 model Session {
   id String @id
+  scope String @default("nora")
   createdAt DateTime @default(now())
   lastSeen DateTime @default(now())
+  @@index([scope])
 }
 model LoginAttempt {
   id Int @id @default(1)
   failures Int @default(0)
   blockedUntil DateTime?
+}
+model ExternalUsage {
+  provider String
+  period String
+  count Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@id([provider, period])
+}
+
+model MenuGeneration {
+  id String @id @default(cuid())
+  status String @default("active")
+  source String
+  inventoryRevision Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  dishes MenuDish[]
+  @@index([status, createdAt])
+}
+
+model MenuDish {
+  id String @id @default(cuid())
+  generationId String
+  generation MenuGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  position Int
+  nameZh String
+  nameEn String
+  prepMinutes Int
+  cookMinutes Int
+  imageSearchQuery String
+  ingredientsJson String
+  stepsZhJson String
+  stepsEnJson String
+  requiredItemIdsJson String
+  useSoon Boolean @default(false)
+  imageId String?
+  imageStatus String @default("queued")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([generationId, position])
+  @@index([generationId, position])
+}
+
+model MenuImage {
+  id String @id @default(cuid())
+  normalizedDish String
+  candidateIndex Int
+  title String
+  pageUrl String
+  imageUrl String
+  source String
+  path String
+  mime String
+  size Int
+  preferred Boolean @default(false)
+  selected Boolean @default(false)
+  disliked Boolean @default(false)
+  lastUsedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  @@unique([normalizedDish, candidateIndex])
+  @@index([normalizedDish, preferred, disliked])
+  @@index([lastUsedAt])
+}
+
+model MenuJob {
+  id String @id @default(cuid())
+  type String
+  status String @default("queued")
+  priority Int @default(0)
+  generationId String?
+  dishId String?
+  stage Int @default(0)
+  stateJson String?
+  attempts Int @default(0)
+  notBefore DateTime @default(now())
+  error String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([status, notBefore, priority])
+  @@index([generationId])
+  @@index([dishId])
 }

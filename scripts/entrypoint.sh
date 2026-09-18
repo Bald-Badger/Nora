@@ -9,7 +9,19 @@ if [ "$(id -u)" = 0 ]; then
     install -m 400 /run/secrets/groq_api_key /run/nora/groq_api_key
     chown node:node /run/nora/groq_api_key
   fi
+  if [ -f /run/secrets/gemini_api_key ]; then
+    gosu node rm -f /run/nora/gemini_api_key
+    install -m 400 /run/secrets/gemini_api_key /run/nora/gemini_api_key
+    chown node:node /run/nora/gemini_api_key
+  fi
+  if [ -f /run/secrets/brave_search_api_key ]; then
+    gosu node rm -f /run/nora/brave_search_api_key
+    install -m 400 /run/secrets/brave_search_api_key /run/nora/brave_search_api_key
+    chown node:node /run/nora/brave_search_api_key
+  fi
   export AI_KEY_FILE=/run/nora/groq_api_key
+  export GEMINI_KEY_FILE=/run/nora/gemini_api_key
+  export BRAVE_SEARCH_KEY_FILE=/run/nora/brave_search_api_key
   exec gosu node sh /app/scripts/entrypoint.sh "$@"
 fi
 if [ "${1:-}" = maintenance ]; then
@@ -17,6 +29,10 @@ if [ "${1:-}" = maintenance ]; then
     npm run maintenance || true
     sleep 86400
   done
+fi
+if [ "${1:-}" = menu-worker ]; then
+  npx prisma migrate deploy
+  exec npx tsx scripts/menu-worker.ts
 fi
 npx prisma migrate deploy
 exec "$@"

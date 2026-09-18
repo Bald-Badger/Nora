@@ -16,7 +16,7 @@ The current deployment includes:
 
 - A Next.js application running as the unprivileged `node` user with a read-only root filesystem.
 - Traefik on `192.168.50.39:443` with automatic ACME DNS-01 certificates.
-- Pi-hole split DNS mapping `nora.shuainium.com` to the private server address.
+- Pi-hole split DNS mapping `nora.shuainium.com` and `menu.shuainium.com` to the private server address.
 - No public address record, router port forwarding, Cloudflare Tunnel, Docker socket mount, or directly published application port.
 - A verified Groq connection with structured image recognition through `qwen/qwen3.8-27b`.
 
@@ -47,6 +47,7 @@ In Pi-hole, add a local DNS record:
 
 ```text
 nora.shuainium.com -> <Nora private LAN address>
+menu.shuainium.com -> <Nora private LAN address>
 ```
 
 Configure WireGuard clients to use Pi-hole for DNS and route the home LAN. Do not create a public `A` or `AAAA` record, enable a Cloudflare Tunnel, or forward port `443` on the router.
@@ -59,6 +60,8 @@ For a fresh host only, create the root-only secret directory and files. These co
 sudo install -d -m 700 -o root -g root /etc/nora/secrets
 sudo test -f /etc/nora/secrets/cloudflare_dns_token || sudo install -m 600 -o root -g root /dev/null /etc/nora/secrets/cloudflare_dns_token
 sudo test -f /etc/nora/secrets/groq_api_key || sudo install -m 600 -o root -g root /dev/null /etc/nora/secrets/groq_api_key
+sudo test -f /etc/nora/secrets/gemini_api_key || sudo install -m 600 -o root -g root /dev/null /etc/nora/secrets/gemini_api_key
+sudo test -f /etc/nora/secrets/brave_search_api_key || sudo install -m 600 -o root -g root /dev/null /etc/nora/secrets/brave_search_api_key
 ```
 
 Create a Cloudflare API token limited to the `shuainium.com` zone with only **Zone DNS Edit** and **Zone Read** permissions. In Bash with shell tracing disabled (`set +x`), enter it without placing its value in shell history:
@@ -77,17 +80,35 @@ printf '%s' "$NORA_SECRET" | sudo tee /etc/nora/secrets/groq_api_key >/dev/null
 unset NORA_SECRET
 ```
 
+Enter the Gemini fallback API key the same way:
+
+```bash
+read -rsp 'Gemini API key: ' NORA_SECRET; echo
+printf '%s' "$NORA_SECRET" | sudo tee /etc/nora/secrets/gemini_api_key >/dev/null
+unset NORA_SECRET
+```
+
+Enter the Brave Image Search API key the same way. The key is used only for menu-image research and has a local hard limit of 999 queries per household-time-zone month:
+
+```bash
+read -rsp 'Brave Search API key: ' NORA_SECRET; echo
+printf '%s' "$NORA_SECRET" | sudo tee /etc/nora/secrets/brave_search_api_key >/dev/null
+unset NORA_SECRET
+```
+
 Confirm metadata only; never print either file:
 
 ```bash
 sudo stat -c '%U %G %a %n' \
   /etc/nora/secrets/cloudflare_dns_token \
-  /etc/nora/secrets/groq_api_key
+  /etc/nora/secrets/groq_api_key \
+  /etc/nora/secrets/gemini_api_key \
+  /etc/nora/secrets/brave_search_api_key
 ```
 
 Both files should report `root root 600`.
 
-The app startup process copies the Groq key into container-only tmpfs with mode `400`, then drops to UID 1000. The original key remains root-owned. Only the proxy mounts the Cloudflare token. No secret value appears in Compose environment variables.
+The app startup process copies the Groq and Gemini keys into container-only tmpfs with mode `400`, then drops to UID 1000. The original keys remain root-owned. Only the proxy mounts the Cloudflare token. No secret value appears in Compose environment variables.
 
 ### 4. Prepare persistent certificate storage
 

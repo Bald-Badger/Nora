@@ -2,7 +2,7 @@
 
 This document is the authoritative specification for Nora's behavior, scope, security boundaries, data model, and deployment requirements.
 
-Nora is a local kitchen-inventory notebook for the fridge, freezer, and shelf, with a chat interface and a bridge to an external AI agent such as ChatGPT.
+Nora is a local kitchen-inventory notebook for the fridge, freezer, and shelf, with a chat interface and a bridge to an external AI agent such as ChatGPT. It also offers AI-generated recipes and meal discovery grounded in the usable inventory.
 
 The goal is to make updating and checking kitchen food inventory feel as easy as texting someone. Nora records what is available, helps prevent forgotten or duplicate purchases, tracks expiration information, and supplies inventory context to the AI agent when the user requests higher-level help.
 
@@ -27,13 +27,14 @@ Nora is not its own reasoning, recipe, or recommendation engine.
 - Estimating expiration dates when no manual date is available.
 - Interpreting uploaded images.
 - Producing meal, recipe, substitution, and shopping recommendations.
+- Selecting a relevant dish image from a bounded set of Brave Image Search candidates.
 - Returning typed, structured inventory actions for Nora to validate.
 
 The AI agent never receives direct database access.
 
 The AI provider is replaceable. Nora's domain logic, inventory schema, validation, and user interface must not depend on one provider's SDK or response format. Provider-specific code belongs behind a common adapter so Groq, OpenAI, Gemini, or a future local model can be selected through configuration without rewriting inventory behavior.
 
-The first implementation ships the Groq adapter. Additional providers require an adapter implementing the same contract; selecting an unsupported provider must fail visibly rather than silently falling back.
+Groq is the primary adapter. Gemini is a configured automatic fallback for Groq completion failures and rate limits, using `gemini-3.5-flash-lite` by default for multimodal structured extraction. Nora sends the same bounded inventory context and image only to the fallback request when Groq cannot complete; no provider receives database or secret access. The fallback can be disabled through configuration. Selecting an unsupported primary provider must fail visibly.
 
 ## MVP Interface
 
@@ -47,7 +48,7 @@ The inventory view is hidden until requested and groups items by category. It sh
 
 The interface supports persistent day and night themes with an obvious header toggle. The user's choice is retained locally in the browser.
 
-The AI status indicator reflects completion health, not merely provider reachability. A successful completion immediately reports ready; rate-limit responses immediately report rate limited until their retry window passes; network or provider failures report unavailable. The client refreshes status after every AI request and periodically while the page is open.
+The AI status indicator uses a separate recognizable icon for each configured agent: Groq and Gemini. Each icon is green only when that provider's credentialed health check or latest completion succeeds, and red when that provider is unavailable or rate limited. Hovering an icon identifies its provider and state. The client refreshes status after every AI request and periodically while the page is open.
 
 Each active inventory item has a trash control for quickly marking it discarded. Discarding is an audited, undoable inventory edit rather than a database deletion. Discarded items leave the default active view and remain visible when past items are included.
 
@@ -132,13 +133,85 @@ Prompt maintenance follows these rules:
 
 ## AI Agent Requests
 
-Nora does not act as a general-purpose chatbot. It accepts only household food inventory, food storage, expiration, grocery, and inventory-informed cooking, recipe, meal-planning, or shopping requests. It briefly declines unrelated chat and does not disclose inventory context to the AI answering stage for such requests.
+Nora accepts household food inventory, food storage, expiration, grocery, cooking, recipe, meal-planning, and shopping requests. It may generate a recipe even when the request is not limited to an exact current-inventory match, while clearly identifying ingredients Nora does not have. It briefly declines unrelated chat and does not disclose inventory context to the AI answering stage for such requests.
 
 For open-ended questions such as "What can I make right now?", Nora passes the question and relevant inventory context to the configured AI agent. The context may include current inventory, soon-to-expire items, past inventory activity, household preferences, and time constraints.
 
 The AI agent handles meal ideas, recipes, substitutions, and weekly meal planning. Advice does not change inventory unless the user explicitly requests an inventory change.
 
 When asked, the AI agent may use past inventory activity to recommend likely staples. For example, if the user regularly keeps full-fat milk in the fridge, it may suggest buying milk when none remains. Nora must not proactively interrupt the user, add recommended items, or modify the shopping list without a request.
+
+## Menu Discovery Page
+
+Nora provides a separate, authenticated meal-discovery interface at `https://menu.shuainium.com`. It is available only on the trusted home LAN and home VPN and uses Nora's existing local inventory, session policy, AI-provider boundary, and private HTTPS deployment. Menu authenticates against the same password hash as Nora, but requires its own sign-in and issues a separate host-only session cookie rather than sharing Nora's cookie across subdomains. Signing into or out of one hostname does not silently authenticate or terminate the other hostname's session. Menu uses the same 15-day idle and 30-day maximum session lifetimes. It is a discovery surface and does not modify inventory when meals are viewed, extended, or opened. Recipes shown there are generated by the configured AI agent from the validated meal-discovery request and are not copied from a crawled recipe page.
+
+The page recommends dishes that can be made from the current usable inventory. Expired, discarded, empty, and otherwise inactive items must never be supplied as available ingredients or used in a recommendation. Menu assumes no seasonings, staples, oil, or other cooking ingredients are available unless they exist as active inventory records. The initial assumed-ingredient set is empty and is not silently expanded by the AI. During testing, common ingredients are represented by explicit fixture inventory; in normal use, the user adds them to inventory individually.
+
+Recommendations are not restricted to a cuisine. Chinese cuisines receive a gentle ranking preference but should not dominate every batch. When the inventory supports a broad range of dishes, approximately two or three suggestions in a six-dish group may be Chinese, with the rest drawn from suitable varied cuisines and cooking styles. This is a soft preference rather than a fixed quota, and ingredient suitability takes priority over cuisine. Newly generated recommendations must be meaningfully different rather than merely reshuffling the same dishes.
+
+Chinese is the primary display language for the menu page. Its top bar provides a compact `中 / En` toggle for switching the menu interface between Chinese and English; Chinese is the initial default and the choice is retained locally in the browser. Dish names, recipe instructions, ingredients, status labels, and controls must have both language forms in the validated menu response so switching does not require another AI request.
+
+Nora and Menu each provide a compact cross-site navigation icon in their top bars: a refrigerator takes the user to Nora and a menu-utensils icon takes the user to Menu. Each icon has an accessible name and a hover label identifying its destination.
+
+The menu page provides an obvious day/night theme toggle in its top bar. The selected theme is retained locally in the browser and applies to the page, meal cards, recipe detail view, and overlays.
+
+The menu interface should be polished with the restrained, premium feel of a high-end Chinese restaurant's QR-code ordering page: food-forward imagery, confident typography, refined spacing, and clear dish information. It must remain practical and easy to scan, avoiding marketing-page decoration, excessive visual effects, or dense ornamental styling that competes with the food and recipe content.
+
+The primary page is a vertically scrolling responsive card grid: three columns on wide screens, two columns on tablets, and one column on phones. It does not use a horizontal carousel or swipe navigation. The first six meal suggestions appear immediately. As the user approaches the bottom of the page, Nora appends the next cached group of six below the existing cards. A `Give me more` action also appends six dishes and never replaces the visible feed. There is no Refresh action. Each meal card contains:
+
+1. A relevant dish image selected by the AI from Brave Image Search candidates.
+2. The dish name.
+3. Estimated preparation time.
+4. Estimated cooking time.
+
+Meals that use one or more usable ingredients expiring within three calendar days receive a prominent `Use soon` treatment. This uses the same three-day threshold as Nora's expiration reminder bell, is based on Nora's authoritative inventory dates, and opening the meal identifies which ingredients triggered it. Expired ingredients remain excluded.
+
+Opening a card uses a short, restrained transition and presents the recipe in a modal on wider screens and a near-full-screen sheet on phones. The detail view contains the dish name, image, preparation and cooking estimates, ingredients, and ordered meal-preparation steps. Recipes default to two servings. Every ingredient has a numeric amount and practical unit; vague quantities such as `some`, `as needed`, `to taste`, `适量`, and `少许` are not accepted. Metric weight or volume is preferred, while exact counts or fractions of an inventory unit are used when conversion would require inventing package information. Each step repeats the exact amount of an ingredient when it is first used, includes an estimated duration, identifies temperature or an unambiguous heat level when relevant, and gives a visual or texture cue. Actions requiring separate temperatures or timers are separate steps. Chinese and English instructions contain equivalent quantities, temperatures, durations, and detail. Step durations remain reasonably consistent with the card's total preparation and cooking estimates.
+
+If Nora can confirm that a required ingredient was completely exhausted, discarded, marked empty, or expired after a cached recipe was generated, Nora immediately hides that dish from the menu feed and backfills it from the valid cache when possible. A reduced but nonzero quantity does not remove or downgrade a cached dish. It must never continue to present an expired or completely unavailable ingredient as usable. It has an obvious close control, supports keyboard and touch dismissal, keeps focus within the open view, and respects reduced-motion preferences.
+
+Online images are untrusted remote content. Nora uses Brave Image Search to retrieve up to nine meal-specific candidates, collecting only the image URL, page URL, title, source name, and bounded image preview needed for selection. The configured AI agent selects the candidate that best represents the generated dish through a four-call, two-stage tournament: three preliminary calls each compare exactly three candidate images, then one final call compares the three preliminary winners. This respects the configured Groq model's three-image request limit. The browser must not contact arbitrary image hosts directly. After selection, Nora retrieves the image server-side, accepts only bounded raster image formats and sizes, strips unnecessary metadata, stores a local cached copy with source attribution, and serves that copy through Nora. A failed image search or download must not prevent the text recommendation from appearing; the card uses a neutral local placeholder and reports no false image success.
+
+The selected-image cache and its Brave candidate pool are indexed by normalized dish name and are separate from the 30-day user-upload retention store. Cached menu images and their candidate metadata have no time-based expiry. When a dish already has a cached image, Nora reuses it on later menu refreshes without issuing another Brave query. Nora searches again only when there is no cached candidate pool for the dish or the user explicitly requests a replacement search.
+
+Its hard on-disk image limit is 512 MiB. Nora updates an image's last-used timestamp whenever it serves that image to the menu interface. When adding or replacing an image would exceed 512 MiB, Nora evicts the least recently used cached images until the new image fits. A preferred image is not pinned: it is evicted by the same least-recently-used policy when it has not been served for a long time. Eviction removes the local image and its cache record but never affects a recipe, inventory record, audit event, or external source attribution stored with a currently displayed result.
+
+Long-pressing an image opens a compact control with `I like this image`, `I don't like this image`, and `Go to image source`; an equivalent keyboard-accessible control must be available for non-touch use. The source action opens the recorded public source page in a new tab without sending Nora credentials, cookies, or a referrer. Liking an image makes it the preferred, golden-default image for that normalized dish. Nora uses the preferred image while its cached file remains available, until the user explicitly dislikes it, or until normal cache eviction removes it. Disliking the displayed image records that preference permanently and immediately replaces it with the next eligible candidate from the cached pool, without issuing a new Brave query. When no other eligible candidate remains, Nora leaves the final candidate displayed and shows `This is the last image` on the card. The AI does not override an explicit like or dislike preference.
+
+Brave queries use only the AI-generated dish search terms, not inventory records, user messages, or AI prompts. The selected source image is retrieved by a tightly restricted outbound client, not a general browsing tool. It fetches only public `http` and `https` destinations resolved to public IP addresses, blocks loopback, private, link-local, multicast, reserved, and home-LAN/VPN ranges on every redirect and connection, uses short timeouts and bounded response sizes, does not execute scripts, and accepts only raster image content after signature validation. It must not send Nora credentials, cookies, local URLs, or inventory data to source-image hosts. It records only minimal operational diagnostics locally. Any image source must remain attributable in the meal detail view and be removable from the local cache.
+
+### Deferred Image-Ingestion Hardening
+
+Menu image downloads are re-encoded into fresh local JPEG files without preserving source metadata, so the browser receives pixels rather than the original third-party file structure. The following additional defenses are planned before treating third-party image ingestion as fully hardened:
+
+- Verify input-file signatures before decoding and accept only JPEG, PNG, or WebP. Reject SVG, PDF, GIF, AVIF, and every unknown format rather than relying only on a response content type or decoder behavior.
+- Set an explicit conservative decoded-pixel limit before raster processing, in addition to the existing bounded download size, to resist decompression-bomb images with small compressed files and enormous claimed dimensions.
+- Keep `sharp` and its native image-decoding dependencies updated as part of routine dependency maintenance.
+- Continue treating search titles, source names, and source pages as untrusted input. Render them only as escaped text; never insert search metadata as HTML. Source links open only after a user action in a new browsing context with `noopener noreferrer` and no referrer.
+- Preserve the private same-origin image-serving model and `nosniff` response header; never proxy original source files or pass through SVG/data URLs to the browser.
+
+Meal discovery uses a dedicated version-controlled prompt and typed response schema. The AI receives only current non-expired inventory, an explicitly empty assumed-ingredient set, current household date/time, recent discovery results needed to reduce repetition, explicit menu preferences, and image-candidate metadata/previews for the generated dish. It does not receive credentials, debug logs, unrelated chat, or direct database access. Nora validates every recommendation before displaying it and rejects a generated recipe that silently requires an ingredient absent from active inventory.
+
+Nora maintains a rolling pool of 18 validated dishes, enough for three groups of six. It keeps at least one additional six-dish group cached ahead of what the user has seen. `Give me more` serves cached dishes immediately when available. If fewer than six unseen dishes remain, the foreground queue prepares six as soon as provider cooldowns permit and then replenishes another six in the background. Cards may use the local placeholder while image work completes.
+
+Inventory edits mark the menu pool for end-of-day evaluation, but do not directly trigger generation. Once per local day, at a deterministic time hashed from the household and date within `02:00` through `05:00 America/Phoenix` the following morning, Nora evaluates the day's net inventory change. If the server missed that window, it performs one catch-up evaluation after startup. Nora regenerates only when the net change is likely to alter useful meal choices, such as adding or exhausting a protein, staple, major vegetable, or meaningful quantity. Trivial edits such as adding ordinary fruit, correcting wording, moving an item between storage details, or making a small quantity adjustment do not invalidate otherwise useful recommendations. This decision is deterministic local domain logic; it must not consume an AI request merely to decide whether an AI request is needed.
+
+Automatic menu work is spread across the nightly window rather than issued in a burst. One structured AI request produces the 18-dish text pool. Image searches, four-call image-selection tournaments, and downloads are queued and paced over time. Nora has two scheduling lanes. Interactive or debugging work, including `Generate now` and a user requesting more dishes when no cache is available, has priority and uses an adaptive per-provider limiter: it follows the configured provider's live request and token limit headers and uses the shortest safe interval those limits permit. It must honor `Retry-After` immediately and use exponential backoff with jitter for `429` and transient `5xx` responses, but has no arbitrary product-level 60-second cooldown. Routine automatic work is low priority and intentionally spaced across the remaining hashed `02:00`–`05:00` window: its initial defaults are at least two minutes between AI calls, one minute between Brave searches, and 30 seconds between image downloads. These routine intervals are configurable. An automatic run makes no more than one attempt per configured provider and never loops indefinitely.
+
+The menu page includes a `Generate now` action for explicitly requesting a new pool without waiting for the nightly evaluator. It bypasses only the meaningful-change and end-of-day timing checks; it does not bypass authentication, the adaptive live provider limiter, provider quotas, cache validation, or the Brave monthly limit.
+
+Recipe details include a serving stepper defaulting to two and bounded to 1 through 12 servings. Ingredient display quantities and matching quantities embedded in the instructions scale immediately without another AI request. Each generated ingredient separately records its two-serving cooking amount and the quantity expressed in its referenced inventory item's own unit.
+
+The recipe detail includes `Cook this`. It never changes inventory on the first click: Nora shows the dish, selected serving count, and a clear confirmation that inventory will be deducted. After confirmation, Nora rechecks every required item against current status, expiration, and quantity, rejects the entire operation if any item is unavailable, and atomically deducts all ingredient quantities through the normal inventory transaction, audit log, revision, and undo system.
+
+Brave Image Search is the initial image-candidate provider. Nora enforces a hard, local calendar-month cap of 999 Brave image-search requests before any network request is made. The counter is stored in SQLite by provider and household-time-zone month, increments atomically, and fails closed once the cap is reached. After the 999th search, Nora performs no additional Brave requests until the next household-time-zone calendar month. Meal and recipe generation continues normally, and dishes without a cached image use Nora's neutral local placeholder without claiming that it is a real image of the dish. The monthly cap is configurable for a future deployment, but the initial default is 999. Image-search credentials remain in a root-only host secret file, are copied only to Nora's container tmpfs at startup, and never reach the browser or AI provider.
+
+### Future Menu Features
+
+The following features are documented for later implementation and are not required for the first menu discovery release:
+
+- Inventory matching that distinguishes meals the user can make now from meals requiring additional ingredients. When ingredients are missing, Nora may recommend a grocery list that would enable the meal; it must not add anything to inventory automatically.
+- A focused cook mode that presents one preparation step at a time and supports optional timers.
 
 ## Image Handling
 
@@ -242,11 +315,13 @@ All session and data-retention periods must be configuration values rather than 
 - **LAN address:** `192.168.50.39`, reserved in the router's DHCP configuration. The `172.x` host addresses are Docker bridge networks and are not used for local DNS.
 - **IPv6:** The host has globally routable IPv6 addresses. Firewall rules must restrict Nora on both IPv4 and IPv6; relying only on the absence of IPv4 port forwarding is insufficient.
 - **Private DNS:** Pi-hole provides local DNS. Configure `nora.shuainium.com` as a local DNS record resolving to `192.168.50.39`, and configure VPN clients to use Pi-hole for DNS.
+- **Menu DNS:** Pi-hole provides `menu.shuainium.com` as a second local DNS record resolving to `192.168.50.39`. It is private and follows the same LAN/VPN-only routing policy as Nora.
 - **Remote access:** WireGuard runs on the home router. WireGuard clients must receive or use Pi-hole as their DNS resolver and have a route to the `192.168.50.0/24` LAN so `nora.shuainium.com` reaches the private server address.
 - **Public DNS provider:** Cloudflare manages `shuainium.com`. Use a narrowly scoped Cloudflare DNS API token for the ACME DNS-01 challenge so Traefik can obtain TLS certificates without exposing Nora to the internet. Do not use a Cloudflare Tunnel or create a public Nora address record.
 - Package Nora as Docker containers managed with Docker Compose.
 - Persist the SQLite database, uploaded images, and application logs outside the disposable application container using mounted local volumes.
 - Make Nora available at `nora.shuainium.com` only from the home LAN and home VPN.
+- Make the menu discovery page available at `menu.shuainium.com` only from the home LAN and home VPN, through the same private reverse proxy and trusted certificate strategy.
 - Use local or split-horizon DNS so that hostname resolves to the server's private IP for LAN and VPN clients.
 - Do not publish Nora in public DNS or forward Nora's HTTP/HTTPS ports from the internet-facing router.
 - Put a reverse proxy in front of Nora for its hostname and TLS handling.
@@ -287,7 +362,7 @@ All session and data-retention periods must be configuration values rather than 
 - **Database:** SQLite through Prisma ORM's established SQLite connector and migrations, using tested stable package versions.
 - **Validation:** Zod schemas between AI responses, application logic, and database writes.
 - **AI integration:** A provider-neutral application interface with provider-specific adapters. Select the active provider and model through configuration rather than hard-coding either one.
-- **Verified development provider:** Groq is reachable from the host, and `qwen/qwen3.8-27b` has been verified for structured vision output using both remote image URLs and locally encoded base64 image uploads. Treat the model ID as configurable because provider model availability may change.
+- **Providers:** Groq with `qwen/qwen3.8-27b` is the primary adapter. Gemini with `gemini-3.5-flash-lite` is the automatic fallback for completion failures and rate limits. Both model IDs are configurable. Gemini is selected for its stable multimodal input and structured-output support.
 - **Testing:** Vitest for application logic and Playwright for browser workflows.
 - **Packaging:** Docker and Docker Compose.
 - **Reverse proxy:** Traefik with file-provider routing and ACME DNS-01 certificate renewal. Do not enable its dashboard or Docker-socket provider.
@@ -322,7 +397,6 @@ All session and data-retention periods must be configuration values rather than 
 ## Nice Later Ideas
 
 - Recipe integrations.
-- An inventory-based meal discovery page that shows AI-recommended dishes from current non-expired inventory, recipes, and clearly identified missing ingredients.
 - A dedicated food-type shelf-life system for automatic expiration estimates. The MVP uses the configured AI agent's general estimate when no manual date is available.
 
 ## Not Planned Yet

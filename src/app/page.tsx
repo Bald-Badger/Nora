@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { siGooglegemini } from "simple-icons";
 import {
   ArrowUp,
   Paperclip,
@@ -15,15 +16,33 @@ import {
   Minus,
   Plus,
   Download,
-  Wifi,
-  WifiOff,
   Bell,
   Camera,
   Sun,
   Moon,
   Eye,
   EyeOff,
+  Utensils,
 } from "lucide-react";
+
+function GeminiMark() {
+  return (
+    <svg className="provider-mark gemini-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={siGooglegemini.path} fill="currentColor" />
+    </svg>
+  );
+}
+
+function GroqMark() {
+  return (
+    <img
+      className="provider-mark groq-mark"
+      src="/providers/powered-by-groq-dark.svg"
+      alt=""
+    />
+  );
+}
+
 type Item = {
   id: string;
   name: string;
@@ -77,10 +96,10 @@ export default function Home() {
     [search, setSearch] = useState(""),
     [showPast, setShowPast] = useState(false),
     [householdToday, setHouseholdToday] = useState(""),
-    [providerOnline, setProviderOnline] = useState<boolean | null>(null),
-    [providerState, setProviderState] = useState<
-      "checking" | "ready" | "unavailable" | "rate_limited"
-    >("checking"),
+    [agentStates, setAgentStates] = useState({
+      groq: "checking",
+      gemini: "checking",
+    }),
     [exportFormat, setExportFormat] = useState("csv"),
     [hasMoreMessages, setHasMoreMessages] = useState(false),
     [loadingHistory, setLoadingHistory] = useState(false);
@@ -129,11 +148,13 @@ export default function Home() {
   async function checkProvider() {
     try {
       const d = await api("provider-status");
-      setProviderOnline(d.available);
-      setProviderState(d.state || (d.available ? "ready" : "unavailable"));
+      setAgentStates({
+        groq: d.agents?.groq?.state || (d.available ? "ready" : "unavailable"),
+        gemini:
+          d.agents?.gemini?.state || (d.available ? "ready" : "unavailable"),
+      });
     } catch {
-      setProviderOnline(false);
-      setProviderState("unavailable");
+      setAgentStates({ groq: "unavailable", gemini: "unavailable" });
     }
   }
   useEffect(() => {
@@ -270,7 +291,6 @@ export default function Home() {
         setItems([]);
         setMessages([]);
         setPending([]);
-        setProviderOnline(null);
       } else await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -441,6 +461,14 @@ export default function Home() {
           Nora <span className="section-label">/ Kitchen</span>
         </div>
         <nav>
+          <a
+            className="icon icon-link"
+            href="https://menu.shuainium.com"
+            title="Go to Menu"
+            aria-label="Go to Menu"
+          >
+            <Utensils size={19} />
+          </a>
           <button
             className="icon theme-toggle"
             type="button"
@@ -677,28 +705,23 @@ export default function Home() {
           </div>
         </form>
         <div className="footer-note">
-          <span
-            className={`provider-status ${providerOnline === false ? "unavailable" : ""}`}
-            title={
-              providerOnline === false
-                ? "AI provider unavailable"
-                : providerOnline === true
-                  ? "AI provider available"
-                  : "Checking AI provider"
-            }
-          >
-            {providerOnline === false ? (
-              <WifiOff size={12} />
-            ) : (
-              <Wifi size={12} />
-            )}
-            {providerOnline === null
-              ? "AI checking"
-              : providerState === "rate_limited"
-                ? "AI rate limited"
-                : providerOnline
-                ? "AI ready"
-                : "AI unavailable"}
+          <span className="agent-liveness" aria-label="AI agent status">
+            <span
+              className={`agent-status ${agentStates.groq}`}
+              title={`Groq: ${agentStates.groq.replaceAll("_", " ")}`}
+              aria-label={`Groq: ${agentStates.groq.replaceAll("_", " ")}`}
+            >
+              <GroqMark />
+              <span className="agent-status-dot" aria-hidden="true" />
+            </span>
+            <span
+              className={`agent-status ${agentStates.gemini}`}
+              title={`Gemini: ${agentStates.gemini.replaceAll("_", " ")}`}
+              aria-label={`Gemini: ${agentStates.gemini.replaceAll("_", " ")}`}
+            >
+              <GeminiMark />
+              <span className="agent-status-dot" aria-hidden="true" />
+            </span>
           </span>
           <span>·</span>
           {new Intl.DateTimeFormat("en", {

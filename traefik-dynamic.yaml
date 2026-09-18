@@ -9,6 +9,16 @@ http:
         - upload-limit
       tls:
         certResolver: cloudflare
+    menu:
+      rule: Host(`menu.shuainium.com`)
+      entryPoints:
+        - websecure
+      service: nora
+      middlewares:
+        - menu-root
+        - upload-limit
+      tls:
+        certResolver: cloudflare
 
   services:
     nora:
@@ -16,6 +26,10 @@ http:
         servers:
           - url: http://nora:8080
   middlewares:
+    menu-root:
+      replacePathRegex:
+        regex: "^/$"
+        replacement: "/menu"
     upload-limit:
       buffering:
         maxRequestBodyBytes: 9437184

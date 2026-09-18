@@ -1,4 +1,45 @@
 import { test, expect } from "@playwright/test";
+test("menu login is responsive and private", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/menu");
+  await expect(page.getByRole("heading", { name: "今天吃什么？" })).toBeVisible();
+  const password = page.getByLabel("密码", { exact: true });
+  await expect(password).toHaveAttribute("type", "password");
+  await page.getByRole("button", { name: "显示密码" }).click();
+  await expect(password).toHaveAttribute("type", "text");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: `/tmp/${info.project.name}-menu-login.png`, fullPage: true });
+});
+test("menu scales servings, exposes image source, and confirms cooking", async ({ page }, info) => {
+  const dish = {
+    id: "dish-1", nameZh: "番茄炒蛋", nameEn: "Tomato and eggs", prepMinutes: 5, cookMinutes: 8,
+    ingredients: [{ itemId: "eggs", nameZh: "鸡蛋", nameEn: "Eggs", amountValue: 2, amountUnitZh: "个", amountUnitEn: "eggs", inventoryQuantity: 2 }],
+    stepsZh: ["打散 2 个鸡蛋，用时 1 分钟。", "中火翻炒 2 个鸡蛋 3 分钟至凝固。"],
+    stepsEn: ["Beat 2 eggs for 1 minute.", "Cook 2 eggs over medium heat for 3 minutes."],
+    useSoon: false, imageId: "image-1", imageStatus: "ready", imageSource: "example.com", imagePageUrl: "https://example.com/recipe",
+  };
+  await page.route("**/api/menu/auth", (route) => route.fulfill({ json: { authenticated: true } }));
+  await page.route("**/api/menu/state**", (route) => route.fulfill({ json: { dishes: [dish], total: 1, generating: false } }));
+  await page.route("**/api/menu/image**", (route) => route.fulfill({ status: 404 }));
+  let cookingBody: unknown;
+  await page.route("**/api/menu/cook", async (route) => { cookingBody = route.request().postDataJSON(); await route.fulfill({ json: { receipt: "done" } }); });
+  await page.goto("/menu");
+  await page.locator(".dish-photo").click();
+  await expect(page.getByText("2 个", { exact: true })).toBeVisible();
+  await page.locator(".serving-control").getByRole("button").last().click();
+  await expect(page.getByText("3 个", { exact: true })).toBeVisible();
+  await expect(page.getByText(/打散 3 个鸡蛋/)).toBeVisible();
+  await page.getByRole("button", { name: "做这道菜" }).click();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
+  await page.getByRole("button", { name: "确认扣除" }).click();
+  expect(cookingBody).toEqual({ dishId: "dish-1", servings: 3 });
+  await page.locator(".dish-photo").click({ button: "right" });
+  await expect(page.getByRole("link", { name: "查看图片来源" })).toHaveAttribute("href", "https://example.com/recipe");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await page.screenshot({ path: `/tmp/${info.project.name}-menu-features.png`, fullPage: true });
+});
 test("generate grocery label fixture", async ({ page }, info) => {
   await page.setViewportSize({ width: 700, height: 400 });
   await page.setContent(
@@ -30,6 +71,10 @@ test("login, inventory drawer, photo attachment, and sign out", async ({
   await expect(
     page.getByRole("heading", { name: "What’s in your kitchen?" }),
   ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Go to Menu" })).toHaveAttribute(
+    "href",
+    "https://menu.shuainium.com",
+  );
   await page.getByRole("button", { name: /Inventory/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("textbox", { name: "Search inventory" }).fill("milk");

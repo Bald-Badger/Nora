@@ -10,6 +10,7 @@
     "test": "vitest run",
     "setup": "tsx scripts/setup.ts",
     "maintenance": "tsx scripts/maintenance.ts"
+    ,"menu-worker": "tsx scripts/menu-worker.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
@@ -19,6 +20,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sharp": "^0.35.4",
+    "simple-icons": "^16.31.0",
     "tsx": "^4.20.0",
     "zod": "^4.0.0",
     "zxing-wasm": "^3.1.4"

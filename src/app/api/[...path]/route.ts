@@ -193,7 +193,7 @@ export async function POST(req: NextRequest) {
         data: { failures: 0, blockedUntil: null },
       });
       const token = randomBytes(32).toString("hex");
-      await db.session.create({ data: { id: digest(token) } });
+      await db.session.create({ data: { id: digest(token), scope: "nora" } });
       const response = json({ ok: true });
       response.cookies.set(cookieName, token, {
         httpOnly: true,
@@ -210,8 +210,8 @@ export async function POST(req: NextRequest) {
       await db.session.deleteMany({
         where:
           path === "/api/revoke"
-            ? {}
-            : { id: digest(req.cookies.get(cookieName)!.value) },
+            ? { scope: "nora" }
+            : { id: digest(req.cookies.get(cookieName)!.value), scope: "nora" },
       });
       const response = json({ ok: true });
       response.cookies.set(cookieName, "", {
